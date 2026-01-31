@@ -1,0 +1,108 @@
+const { Pool } = require("pg");
+const jwtUtil = require("../utils/jwt");
+const pool = new Pool({
+  port: 5432,
+  user: "admin",
+});
+/**
+ */
+  /**
+   * POST /auth/wechat/login
+  async wechatLogin(req, res) {
+      const { code } = req.body;
+      if (!code) {
+          code: 400,
+        });
+
+      const wechatData = await wechatUtil.getOpenIdByCode(code);
+
+      let user;
+        "SELECT * FROM users WHERE openid = $1",
+      );
+      if (userQuery.rows.length > 0) {
+      } else {
+        const createUserQuery = await pool.query(
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+          [openid, unionid, "微信用户", "https://via.placeholder.com/100", openid, `${openid}@wechat.com`, "wechat_user"]
+        user = createUserQuery.rows[0];
+
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30天后过期
+        `INSERT INTO user_sessions (user_id, session_key, expires_at)
+         ON CONFLICT (user_id) DO UPDATE SET
+         expires_at = EXCLUDED.expires_at`,
+      );
+      // 4. 生成业务 Token
+        uid: user.id,
+      };
+
+      res.json({
+        data: {
+          user: {
+            openid: user.openid,
+            avatarUrl: user.avatar_url,
+            member: user.member || 1,
+          }
+      });
+    } catch (error) {
+      res.status(200).json({
+        message: error.message || "登录失败"
+    }
+
+   * 获取微信手机号
+   */
+    try {
+      const userId = req.user.uid;
+      if (!code) {
+          code: 400,
+        });
+
+      const phoneNumber = await wechatUtil.getPhoneNumber(code);
+      // 更新用户手机号
+        "UPDATE users SET phone = $1 WHERE id = $2",
+      );
+      res.json({
+        data: {
+        }
+
+      console.error("获取手机号失败:", error.message);
+        code: 500,
+      });
+  }
+  /**
+   * GET /auth/me
+  async getCurrentUser(req, res) {
+      const userId = req.user.uid;
+      const userQuery = await pool.query(
+         FROM users WHERE id = $1`,
+      );
+      if (userQuery.rows.length === 0) {
+          code: 404,
+        });
+
+
+        code: 0,
+          user: {
+            openid: user.openid,
+            avatarUrl: user.avatar_url,
+            member: user.member,
+            isActive: user.is_active,
+            updatedAt: user.updated_at
+        }
+
+      console.error("获取用户信息失败:", error.message);
+        code: 500,
+      });
+  }
+  /**
+   * POST /auth/logout
+  async logout(req, res) {
+      // 这里可以实现服务端 token 黑名单逻辑
+      
+        code: 0,
+      });
+    } catch (error) {
+      res.status(200).json({
+        message: "登出失败"
+    }
+}
+module.exports = new AuthController();

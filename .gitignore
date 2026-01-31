@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.backup
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build
+dist/
+build/
+
+# Certificates (sensitive)
+backend/certs/*.pem
+backend/certs/*.key
+
+# Temporary
+*.tmp
+*.temp
+.cache/
+
+# Terminal files
+terminals/
