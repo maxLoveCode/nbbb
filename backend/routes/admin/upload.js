@@ -5,13 +5,22 @@ const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
 
-// 配置OSS客户端
-const ossClient = new OSS({
-  region: process.env.OSS_REGION || 'oss-cn-hangzhou',
-  accessKeyId: process.env.OSS_ACCESS_KEY_ID,
-  accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
-  bucket: process.env.OSS_BUCKET || 'nbbb'
-});
+// 延迟初始化 OSS 客户端（避免启动时缺少配置导致崩溃）
+let ossClient = null;
+function getOSSClient() {
+  if (!ossClient) {
+    if (!process.env.OSS_ACCESS_KEY_ID || !process.env.OSS_ACCESS_KEY_SECRET) {
+      throw new Error('OSS 配置缺失，请设置 OSS_ACCESS_KEY_ID 和 OSS_ACCESS_KEY_SECRET 环境变量');
+    }
+    ossClient = new OSS({
+      region: process.env.OSS_REGION || 'oss-cn-hangzhou',
+      accessKeyId: process.env.OSS_ACCESS_KEY_ID,
+      accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
+      bucket: process.env.OSS_BUCKET || 'nbbb'
+    });
+  }
+  return ossClient;
+}
 
 // 配置 multer 用于处理文件上传（支持图片和视频）
 const storage = multer.memoryStorage();
@@ -58,7 +67,7 @@ router.post('/image', upload.single('image'), async (req, res) => {
     const objectName = `${folder}/${fileName}`;
 
     // 上传到OSS
-    const result = await ossClient.put(objectName, req.file.buffer, {
+    const result = await getOSSClient().put(objectName, req.file.buffer, {
       headers: {
         'Content-Type': req.file.mimetype,
         'Cache-Control': 'public, max-age=31536000'
@@ -99,7 +108,7 @@ router.post('/images', upload.array('images', 10), async (req, res) => {
       const fileName = generateFileName(file.originalname);
       const objectName = `${folder}/${fileName}`;
 
-      const result = await ossClient.put(objectName, file.buffer, {
+      const result = await getOSSClient().put(objectName, file.buffer, {
         headers: {
           'Content-Type': file.mimetype,
           'Cache-Control': 'public, max-age=31536000'
@@ -142,7 +151,7 @@ router.delete('/image', async (req, res) => {
       });
     }
 
-    await ossClient.delete(objectName);
+    await getOSSClient().delete(objectName);
 
     res.json({
       success: true,
@@ -172,7 +181,7 @@ router.post('/video', upload.single('video'), async (req, res) => {
     const objectName = `${folder}/${fileName}`;
 
     // 上传到OSS
-    const result = await ossClient.put(objectName, req.file.buffer, {
+    const result = await getOSSClient().put(objectName, req.file.buffer, {
       headers: {
         'Content-Type': req.file.mimetype,
         'Cache-Control': 'public, max-age=31536000'
@@ -237,7 +246,7 @@ router.post('/file', (req, res, next) => {
     const objectName = `${uploadFolder}/${fileName}`;
 
     // 上传到OSS
-    const result = await ossClient.put(objectName, req.file.buffer, {
+    const result = await getOSSClient().put(objectName, req.file.buffer, {
       headers: {
         'Content-Type': req.file.mimetype,
         'Cache-Control': 'public, max-age=31536000'
@@ -270,7 +279,7 @@ router.get('/list', async (req, res) => {
   try {
     const { prefix = '', marker = '', maxKeys = 100 } = req.query;
 
-    const result = await ossClient.list({
+    const result = await getOSSClient().list({
       prefix: prefix || '',
       marker: marker || '',
       'max-keys': parseInt(maxKeys) || 100
@@ -282,12 +291,15 @@ router.get('/list', async (req, res) => {
       
       return {
         name: obj.name,
-        url: `https://${ossClient.options.bucket}.${ossClient.options.region}.aliyuncs.com/${obj.name}`,
+        url: `https://${getOSSClient().options.bucket}.${getOSSClient().options.region}.aliyuncs.com/${obj.name}`,
         size: obj.size,
         lastModified: obj.lastModified,
         type: isVideo ? 'video' : (isImage ? 'image' : 'other')
       };
     });
+
+    // 按上传时间倒序排列（最新的在前面）
+    files.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
 
     res.json({
       success: true,
@@ -312,8 +324,8 @@ router.get('/oss-config', (req, res) => {
   try {
     // 生成临时访问凭证
     const config = {
-      region: ossClient.options.region,
-      bucket: ossClient.options.bucket,
+      region: getOSSClient().options.region,
+      bucket: getOSSClient().options.bucket,
       // 注意：不要直接返回 accessKeyId 和 accessKeySecret
       // 这里只是示例，生产环境应该使用 STS 临时凭证
     };

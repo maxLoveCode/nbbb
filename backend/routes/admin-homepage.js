@@ -289,14 +289,14 @@ router.put("/three-images/:id", async (req, res) => {
     const values = [];
     let paramCount = 1;
     
-    if (image !== undefined) updateFields.push(`image = $${paramCount++}`, values.push(image));
-    if (link !== undefined) updateFields.push(`link = $${paramCount++}`, values.push(link));
-    if (sort_order !== undefined) updateFields.push(`sort_order = $${paramCount++}`, values.push(sort_order));
-    if (is_active !== undefined) updateFields.push(`is_active = $${paramCount++}`, values.push(is_active));
+    if (image !== undefined) { updateFields.push(`image = $${paramCount++}`); values.push(image); }
+    if (link !== undefined) { updateFields.push(`link = $${paramCount++}`); values.push(link); }
+    if (sort_order !== undefined) { updateFields.push(`sort_order = $${paramCount++}`); values.push(sort_order); }
+    if (is_active !== undefined) { updateFields.push(`is_active = $${paramCount++}`); values.push(is_active); }
     
     updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
     
-    if (updateFields.length === 0) {
+    if (updateFields.length === 1) { // 只有 updated_at，没有实际更新字段
       return res.status(400).json({ success: false, message: "没有提供更新字段" });
     }
     

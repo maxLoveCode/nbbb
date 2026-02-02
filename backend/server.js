@@ -3,7 +3,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("path");
-require("dotenv").config();
+require("dotenv").config({ path: path.join(__dirname, '..', '.env') });
 
 const requestLogger = require("./middleware/requestLogger");
 
@@ -86,12 +86,20 @@ app.get('/web/', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'web', 'index.html'));
 });
 
-// Admin静态文件服务 - 禁用缓存
+// Admin静态文件服务 - CDN版本，无需构建
+const adminPath = path.join(__dirname, '..', 'admin-cdn');
 app.use('/admin', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    express.static(path.join(__dirname, '..', 'admin'))(req, res, next);
+    express.static(adminPath)(req, res, next);
+});
+// Admin 首页
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(adminPath, 'index.html'));
+});
+app.get('/admin/', (req, res) => {
+    res.sendFile(path.join(adminPath, 'index.html'));
 });
 
 // 限流配置
@@ -170,6 +178,7 @@ const shoppingRouter = require("./routes/shopping");
 const addressRouter = require("./routes/address");
 const adminProductDescriptionsRouter = require("./routes/admin-product-descriptions");
 const favoritesRouter = require("./routes/favorites");
+const browseHistoryRouter = require("./routes/browse-history");
 
 // 旧版接口（保持兼容）
 app.use("/api/product", productRouter);
@@ -187,6 +196,7 @@ app.use("/api/cart", cartRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/payment", paymentRouter);
 app.use("/api/addresses", addressRouter);
+app.use("/api/browse-history", browseHistoryRouter);
 app.use("/api/admin/homepage", adminHomepageRouter); // 后台首页管理（旧）
 app.use("/api/admin/product-descriptions", adminProductDescriptionsRouter);
 app.use("/api/category-page", categoryPageRouter);

@@ -6,13 +6,22 @@ const path = require('path');
 const crypto = require('crypto');
 const miniprogramAuth = require('../../middleware/miniprogramAuth');
 
-// 配置OSS客户端
-const ossClient = new OSS({
-  region: process.env.OSS_REGION || 'oss-cn-hangzhou',
-  accessKeyId: process.env.OSS_ACCESS_KEY_ID,
-  accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
-  bucket: process.env.OSS_BUCKET || 'nbbb'
-});
+// 延迟初始化 OSS 客户端（避免启动时缺少配置导致崩溃）
+let ossClient = null;
+function getOSSClient() {
+  if (!ossClient) {
+    if (!process.env.OSS_ACCESS_KEY_ID || !process.env.OSS_ACCESS_KEY_SECRET) {
+      throw new Error('OSS 配置缺失，请设置 OSS_ACCESS_KEY_ID 和 OSS_ACCESS_KEY_SECRET 环境变量');
+    }
+    ossClient = new OSS({
+      region: process.env.OSS_REGION || 'oss-cn-hangzhou',
+      accessKeyId: process.env.OSS_ACCESS_KEY_ID,
+      accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
+      bucket: process.env.OSS_BUCKET || 'nbbb'
+    });
+  }
+  return ossClient;
+}
 
 // 配置 multer 用于处理文件上传（仅支持图片）
 const storage = multer.memoryStorage();
@@ -81,7 +90,7 @@ router.post('/image', miniprogramAuth, (req, res, next) => {
     const objectName = `${folder}/${fileName}`;
 
     // 上传到OSS
-    const result = await ossClient.put(objectName, req.file.buffer, {
+    const result = await getOSSClient().put(objectName, req.file.buffer, {
       headers: {
         'Content-Type': req.file.mimetype,
         'Cache-Control': 'public, max-age=31536000'
@@ -150,7 +159,7 @@ router.post('/images', miniprogramAuth, (req, res, next) => {
       const fileName = generateFileName(file.originalname);
       const objectName = `${folder}/${fileName}`;
 
-      const result = await ossClient.put(objectName, file.buffer, {
+      const result = await getOSSClient().put(objectName, file.buffer, {
         headers: {
           'Content-Type': file.mimetype,
           'Cache-Control': 'public, max-age=31536000'

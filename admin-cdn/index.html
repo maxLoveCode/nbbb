@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NOT-BORING Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <div v-if="!isLoggedIn" class="login-page">
+        <div class="login-bg">
+          <div class="gradient-orb orb-1"></div>
+          <div class="gradient-orb orb-2"></div>
+          <div class="noise-overlay"></div>
+        </div>
+        <div class="login-container">
+          <div class="login-brand">
+            <div class="brand-mark">NB</div>
+            <h1>NOT-BORING</h1>
+            <p>Admin Console</p>
+          </div>
+          <div class="login-card">
+            <div class="login-header">
+              <h2>登录后台</h2>
+              <span>请输入管理员账号</span>
+            </div>
+            <el-form :model="loginForm" :rules="loginRules">
+              <el-form-item prop="username">
+                <el-input v-model="loginForm.username" placeholder="用户名" size="large" :prefix-icon="User" />
+              </el-form-item>
+              <el-form-item prop="password">
+                <el-input v-model="loginForm.password" type="password" placeholder="密码" size="large" :prefix-icon="Lock" show-password @keyup.enter="handleLogin" />
+              </el-form-item>
+              <el-button type="primary" size="large" :loading="loginLoading" @click="handleLogin" class="login-btn">
+                {{ loginLoading ? '登录中...' : '登 录' }}
+              </el-button>
+            </el-form>
+          </div>
+        </div>
+    </div><el-container v-else class="app-container">
+        <!-- Sidebar -->
+        <el-aside :width="sidebarCollapsed ? '72px' : '240px'" class="app-sidebar">
+          <div class="sidebar-header">
+            <div class="brand-icon">NB</div>
+            <transition name="fade"><span v-show="!sidebarCollapsed" class="brand-text">NOT-BORING</span></transition>
+          </div>
+          <nav class="sidebar-nav">
+            <div v-for="item in menuItems" :key="item.key" :class="['nav-item', { active: currentPage === item.key }]" @click="currentPage = item.key">
+              <el-icon><component :is="item.icon" /></el-icon>
+              <transition name="fade"><span v-show="!sidebarCollapsed">{{ item.label }}</span></transition>
+            </div>
+          </nav>
+          <div class="sidebar-footer">
+            <div class="collapse-btn" @click="sidebarCollapsed = !sidebarCollapsed">
+              <el-icon><component :is="sidebarCollapsed ? 'Expand' : 'Fold'" /></el-icon>
+            </div>
+          </div>
+        </el-aside>
+        
+        <!-- Main -->
+        <el-container class="app-main">
+          <el-header class="app-header">
+            <div class="header-title">
+              <h1>{{ currentPageTitle }}</h1>
+            </div>
+            <div class="header-actions">
+              <el-dropdown @command="handleUserCommand">
+                <div class="user-menu">
+                  <el-avatar :size="36" class="user-avatar">{{ userInfo.username?.[0]?.toUpperCase() }}</el-avatar>
+                  <div class="user-info">
+                    <span class="user-name">{{ userInfo.username }}</span>
+                    <span class="user-role">管理员</span>
+                  </div>
+                  <el-icon class="dropdown-arrow"><ArrowDown /></el-icon>
+                </div>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="logout"><el-icon><SwitchButton /></el-icon>退出登录</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </el-header>
+          
+          <el-main class="app-content">
+            <!-- Dashboard -->
+            <div v-show="currentPage === 'dashboard'" class="page-dashboard">
+              <div class="stats-grid">
+                <div v-for="(stat, idx) in dashboardStats" :key="idx" class="stat-card">
+                  <div class="stat-icon"><el-icon><component :is="stat.icon" /></el-icon></div>
+                  <div class="stat-body">
+                    <span class="stat-value">{{ stat.value }}</span>
+                    <span class="stat-label">{{ stat.label }}</span>
+                  </div>
+                  <div class="stat-trend" :class="stat.trend > 0 ? 'up' : 'down'">
+                    <el-icon><component :is="stat.trend > 0 ? 'Top' : 'Bottom'" /></el-icon>
+                    {{ Math.abs(stat.trend) }}%
+                  </div>
+                </div>
+              </div>
+              <div class="dashboard-grid">
+                <div class="chart-card sales-chart">
+                  <div class="card-header">
+                    <h3>销售趋势</h3>
+                    <el-radio-group v-model="chartPeriod" size="small">
+                      <el-radio-button label="7d">7天</el-radio-button>
+                      <el-radio-button label="30d">30天</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                  <div class="chart-container" ref="salesChartRef"></div>
+                </div>
+                <div class="chart-card order-chart">
+                  <div class="card-header"><h3>订单状态</h3></div>
+                  <div class="chart-container" ref="orderChartRef"></div>
+                </div>
+              </div>
+              <div class="recent-orders-card">
+                <div class="card-header">
+                  <h3>最近订单</h3>
+                  <el-button text @click="currentPage = 'orders'">查看全部 →</el-button>
+                </div>
+                <el-table :data="recentOrders" stripe class="modern-table">
+                  <el-table-column prop="order_no" label="订单号" width="160">
+                    <template #default="{ row }"><span class="order-id">#{{ row.order_no.slice(-8) }}</span></template>
+                  </el-table-column>
+                  <el-table-column prop="customer" label="客户" />
+                  <el-table-column prop="amount" label="金额" align="right">
+                    <template #default="{ row }"><span class="amount">¥{{ row.amount }}</span></template>
+                  </el-table-column>
+                  <el-table-column prop="status" label="状态" width="100">
+                    <template #default="{ row }"><el-tag :type="getStatusType(row.status)" size="small" effect="dark">{{ row.status }}</el-tag></template>
+                  </el-table-column>
+                  <el-table-column prop="date" label="时间" width="120" />
+                </el-table>
+              </div>
+            </div>
+            
+            <!-- Products -->
+            <div v-show="currentPage === 'products'" class="page-products">
+              <div class="page-toolbar">
+                <el-input v-model="productSearch" placeholder="搜索商品名称/编码..." class="search-input" clearable @keyup.enter="handleProductSearch">
+                  <template #prefix><el-icon><Search /></el-icon></template>
+                </el-input>
+                <el-button type="primary" @click="handleProductSearch"><el-icon><Search /></el-icon>搜索</el-button>
+                <el-button @click="loadProducts"><el-icon><Refresh /></el-icon>刷新</el-button>
+              </div>
+              <el-table :data="products" stripe class="modern-table" v-loading="productsLoading">
+                <el-table-column label="图片" width="80">
+                  <template #default="{ row }">
+                    <el-image v-if="row.pic" :src="row.pic" fit="cover" style="width:50px;height:50px;border-radius:6px"></el-image>
+                    <div v-else style="width:50px;height:50px;background:#27272a;border-radius:6px"></div>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="sku_id" label="编码" width="140"><template #default="{ row }"><span class="sku-code">{{ row.sku_id }}</span></template></el-table-column>
+                <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
+                <el-table-column prop="c_name" label="分类" width="100" />
+                <el-table-column prop="sale_price" label="售价" width="100" align="right"><template #default="{ row }"><span class="amount">¥{{ row.sale_price }}</span></template></el-table-column>
+                <el-table-column prop="qty" label="库存" width="80" align="center">
+                  <template #default="{ row }"><el-tag :type="row.qty > 10 ? 'success' : row.qty > 0 ? 'warning' : 'danger'" size="small">{{ row.qty }}</el-tag></template>
+                </el-table-column>
+                <el-table-column label="操作" width="80"><template #default="{ row }"><el-button text type="primary" size="small" @click="showProductDetail(row)">详情</el-button></template></el-table-column>
+              </el-table>
+              <div class="pagination-wrap">
+                <el-pagination v-model:current-page="productPage" v-model:page-size="productPageSize" :total="productTotal" layout="total, sizes, prev, pager, next" :page-sizes="[10, 20, 50]" @change="loadProducts" background />
+              </div>
+              <el-drawer v-model="productDrawer.visible" :title="productDrawer.product?.name" size="50%">
+                <el-descriptions v-if="productDrawer.product" :column="2" border>
+                  <el-descriptions-item label="编码">{{ productDrawer.product.sku_id }}</el-descriptions-item>
+                  <el-descriptions-item label="分类">{{ productDrawer.product.c_name }}</el-descriptions-item>
+                  <el-descriptions-item label="售价"><span class="amount">¥{{ productDrawer.product.sale_price }}</span></el-descriptions-item>
+                  <el-descriptions-item label="库存">{{ productDrawer.product.qty }}</el-descriptions-item>
+                </el-descriptions>
+              </el-drawer>
+            </div>
+            
+            <!-- Orders -->
+            <div v-show="currentPage === 'orders'" class="page-orders">
+              <div class="page-toolbar">
+                <el-input v-model="orderSearch" placeholder="搜索订单号/用户..." class="search-input" clearable @keyup.enter="handleOrderSearch">
+                  <template #prefix><el-icon><Search /></el-icon></template>
+                </el-input>
+                <el-select v-model="orderStatusFilter" placeholder="全部状态" clearable style="width:120px" @change="handleOrderSearch">
+                  <el-option label="待支付" value="pending" />
+                  <el-option label="已支付" value="paid" />
+                  <el-option label="已发货" value="shipped" />
+                  <el-option label="已完成" value="completed" />
+                  <el-option label="已取消" value="cancelled" />
+                </el-select>
+                <el-button type="primary" @click="handleOrderSearch"><el-icon><Search /></el-icon>搜索</el-button>
+                <el-button @click="loadOrders"><el-icon><Refresh /></el-icon>刷新</el-button>
+              </div>
+              <el-table :data="orders" stripe class="modern-table" v-loading="ordersLoading">
+                <el-table-column prop="order_no" label="订单号" width="180"><template #default="{ row }"><el-link type="primary" @click="showOrderDetail(row)">{{ row.order_no }}</el-link></template></el-table-column>
+                <el-table-column prop="user_nickname" label="用户" width="120" />
+                <el-table-column prop="total_amount" label="金额" width="100" align="right"><template #default="{ row }"><span class="amount">¥{{ row.total_amount }}</span></template></el-table-column>
+                <el-table-column prop="status" label="状态" width="100">
+                  <template #default="{ row }"><el-tag :type="getStatusType(row.status)" size="small">{{ getStatusText(row.status) }}</el-tag></template>
+                </el-table-column>
+                <el-table-column prop="created_at" label="下单时间"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
+                <el-table-column label="操作" width="150">
+                  <template #default="{ row }">
+                    <el-button text type="primary" size="small" @click="showOrderDetail(row)">详情</el-button>
+                    <el-dropdown @command="(cmd) => changeOrderStatus(row, cmd)">
+                      <el-button text type="primary" size="small">更多</el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="shipped" :disabled="row.status !== 'paid'">发货</el-dropdown-item>
+                          <el-dropdown-item command="completed" :disabled="row.status !== 'shipped'">完成</el-dropdown-item>
+                          <el-dropdown-item command="cancelled" :disabled="['completed','cancelled'].includes(row.status)">取消</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <div class="pagination-wrap">
+                <el-pagination v-model:current-page="orderPage" v-model:page-size="orderPageSize" :total="orderTotal" layout="total, prev, pager, next" @change="loadOrders" background />
+              </div>
+              <el-drawer v-model="orderDrawer.visible" title="订单详情" size="450px">
+                <el-descriptions v-if="orderDrawer.order" :column="1" border>
+                  <el-descriptions-item label="订单号">{{ orderDrawer.order.order_no }}</el-descriptions-item>
+                  <el-descriptions-item label="用户">{{ orderDrawer.order.user_nickname }}</el-descriptions-item>
+                  <el-descriptions-item label="金额"><span class="amount">¥{{ orderDrawer.order.total_amount }}</span></el-descriptions-item>
+                  <el-descriptions-item label="状态"><el-tag :type="getStatusType(orderDrawer.order.status)">{{ getStatusText(orderDrawer.order.status) }}</el-tag></el-descriptions-item>
+                  <el-descriptions-item label="时间">{{ formatDate(orderDrawer.order.created_at) }}</el-descriptions-item>
+                </el-descriptions>
+              </el-drawer>
+            </div>
+            
+            <!-- Users -->
+            <div v-show="currentPage === 'users'" class="page-users">
+              <div class="page-toolbar">
+                <el-input v-model="userSearch" placeholder="搜索昵称/手机号..." class="search-input" clearable @keyup.enter="handleUserSearch">
+                  <template #prefix><el-icon><Search /></el-icon></template>
+                </el-input>
+                <el-button type="primary" @click="handleUserSearch"><el-icon><Search /></el-icon>搜索</el-button>
+                <el-button @click="loadUsers"><el-icon><Refresh /></el-icon>刷新</el-button>
+              </div>
+              <el-table :data="users" stripe class="modern-table" v-loading="usersLoading">
+                <el-table-column prop="id" label="ID" width="80" />
+                <el-table-column label="用户" width="180">
+                  <template #default="{ row }">
+                    <div class="user-cell">
+                      <el-avatar :size="36">{{ row.nickname?.[0] || 'U' }}</el-avatar>
+                      <div class="user-cell-info"><span class="name">{{ row.nickname || '未设置' }}</span></div>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="phone" label="手机号" width="130"><template #default="{ row }">{{ row.phone || '-' }}</template></el-table-column>
+                <el-table-column prop="order_count" label="订单数" width="80" align="center" />
+                <el-table-column prop="total_spent" label="累计消费" width="120" align="right"><template #default="{ row }"><span class="amount">¥{{ row.total_spent || '0' }}</span></template></el-table-column>
+                <el-table-column prop="created_at" label="注册时间"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
+                <el-table-column prop="is_active" label="状态" width="80">
+                  <template #default="{ row }"><el-switch :model-value="row.is_active" @change="(v) => toggleUserStatus(row, v)" /></template>
+                </el-table-column>
+                <el-table-column label="操作" width="80"><template #default="{ row }"><el-button text type="primary" size="small" @click="showUserDetail(row)">详情</el-button></template></el-table-column>
+              </el-table>
+              <div class="pagination-wrap">
+                <el-pagination v-model:current-page="userPage" v-model:page-size="userPageSize" :total="userTotal" layout="total, prev, pager, next" @change="loadUsers" background />
+              </div>
+              <el-drawer v-model="userDrawer.visible" title="会员详情" size="400px">
+                <div v-if="userDrawer.user" class="user-detail">
+                  <div class="user-header-card">
+                    <el-avatar :size="64">{{ userDrawer.user.nickname?.[0] || 'U' }}</el-avatar>
+                    <h3>{{ userDrawer.user.nickname || '未设置' }}</h3>
+                  </div>
+                  <el-descriptions :column="1" border>
+                    <el-descriptions-item label="ID">{{ userDrawer.user.id }}</el-descriptions-item>
+                    <el-descriptions-item label="手机号">{{ userDrawer.user.phone || '未绑定' }}</el-descriptions-item>
+                    <el-descriptions-item label="订单数">{{ userDrawer.user.order_count || 0 }}</el-descriptions-item>
+                    <el-descriptions-item label="累计消费">¥{{ userDrawer.user.total_spent || '0' }}</el-descriptions-item>
+                    <el-descriptions-item label="注册时间">{{ formatDate(userDrawer.user.created_at) }}</el-descriptions-item>
+                  </el-descriptions>
+                </div>
+              </el-drawer>
+            </div>
+            
+            <!-- Categories -->
+            <div v-show="currentPage === 'categories'" class="page-categories">
+              <div class="page-toolbar">
+                <el-button type="primary" @click="showCategoryDialog()"><el-icon><Plus /></el-icon>添加分类</el-button>
+                <el-button @click="loadCategories"><el-icon><Refresh /></el-icon>刷新</el-button>
+              </div>
+              <el-row :gutter="20">
+                <el-col :xs="24" :lg="8">
+                  <div class="card-section">
+                    <div class="card-header"><h3>分类列表</h3></div>
+                    <div v-loading="categoriesLoading" class="category-list">
+                      <div v-for="cat in categories" :key="cat.id" :class="['category-item', { active: selectedCategory?.id === cat.id }]" @click="selectCategory(cat)">
+                        <div class="category-info">
+                          <div class="category-name">{{ cat.name }}</div>
+                          <div class="category-meta">
+                            <el-tag size="small" :type="cat.type === 'products' ? 'primary' : 'success'">{{ cat.type === 'products' ? '商品' : '卡片' }}</el-tag>
+                            <span>{{ cat.product_count || 0 }} 个商品</span>
+                          </div>
+                        </div>
+                        <div class="category-actions">
+                          <el-button text size="small" @click.stop="showCategoryDialog(cat)"><el-icon><Edit /></el-icon></el-button>
+                          <el-popconfirm title="确定删除该分类？" @confirm="deleteCategory(cat.id)">
+                            <template #reference><el-button text type="danger" size="small" @click.stop><el-icon><Delete /></el-icon></el-button></template>
+                          </el-popconfirm>
+                        </div>
+                      </div>
+                      <el-empty v-if="!categories.length && !categoriesLoading" description="暂无分类" />
+                    </div>
+                  </div>
+                </el-col>
+                <el-col :xs="24" :lg="16">
+                  <div class="card-section">
+                    <div class="card-header">
+                      <h3>{{ selectedCategory?.name || '请选择分类' }} - 商品列表</h3>
+                      <el-button v-if="selectedCategory" type="primary" size="small" @click="addProductDialog = true"><el-icon><Plus /></el-icon>添加商品</el-button>
+                    </div>
+                    <el-table v-if="selectedCategory" :data="categoryProducts" v-loading="categoryProductsLoading" stripe class="modern-table">
+                      <el-table-column prop="product_code" label="商品编码" width="150" />
+                      <el-table-column prop="name" label="名称" />
+                      <el-table-column label="操作" width="80">
+                        <template #default="{ row }">
+                          <el-popconfirm title="确定移除？" @confirm="removeProductFromCategory(row.product_code)">
+                            <template #reference><el-button text type="danger" size="small">移除</el-button></template>
+                          </el-popconfirm>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                    <el-empty v-else description="请从左侧选择分类" />
+                  </div>
+                </el-col>
+              </el-row>
+              <el-dialog v-model="categoryDialog.visible" :title="categoryDialog.isEdit ? '编辑分类' : '添加分类'" width="450px">
+                <el-form :model="categoryDialog.form" label-width="80px">
+                  <el-form-item label="名称"><el-input v-model="categoryDialog.form.name" /></el-form-item>
+                  <el-form-item label="类型">
+                    <el-radio-group v-model="categoryDialog.form.type">
+                      <el-radio label="products">商品</el-radio>
+                      <el-radio label="cards">卡片</el-radio>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="排序"><el-input-number v-model="categoryDialog.form.sort_order" :min="0" /></el-form-item>
+                  <el-form-item label="启用"><el-switch v-model="categoryDialog.form.is_active" /></el-form-item>
+                </el-form>
+                <template #footer>
+                  <el-button @click="categoryDialog.visible = false">取消</el-button>
+                  <el-button type="primary" @click="saveCategory" :loading="categoryDialog.saving">保存</el-button>
+                </template>
+              </el-dialog>
+              <el-dialog v-model="addProductDialog" title="添加商品" width="400px">
+                <el-input v-model="newProductCode" placeholder="输入商品编码，多个用逗号分隔" />
+                <template #footer>
+                  <el-button @click="addProductDialog = false">取消</el-button>
+                  <el-button type="primary" @click="addProductToCategory">添加</el-button>
+                </template>
+              </el-dialog>
+            </div>
+            
+            <!-- Homepage -->
+            <div v-show="currentPage === 'homepage'" class="page-homepage">
+              <div class="page-toolbar">
+                <el-button @click="loadHomepage"><el-icon><Refresh /></el-icon>刷新</el-button>
+              </div>
+              
+              <!-- Banners -->
+              <div class="card-section mb-20">
+                <div class="card-header">
+                  <h3>🎠 主视觉轮播</h3>
+                  <el-button type="primary" size="small" @click="showBannerDialog()"><el-icon><Plus /></el-icon>添加</el-button>
+                </div>
+                <el-table :data="banners" v-loading="homepageLoading" stripe class="modern-table">
+                  <el-table-column label="图片" width="100">
+                    <template #default="{ row }"><el-image v-if="row.image" :src="row.image" fit="cover" style="width:60px;height:40px;border-radius:4px" /></template>
+                  </el-table-column>
+                  <el-table-column prop="title" label="标题" />
+                  <el-table-column prop="sort_order" label="排序" width="80" />
+                  <el-table-column prop="is_active" label="状态" width="80">
+                    <template #default="{ row }"><el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '启用' : '禁用' }}</el-tag></template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="150">
+                    <template #default="{ row }">
+                      <el-button text type="primary" size="small" @click="showBannerDialog(row)">编辑</el-button>
+                      <el-popconfirm title="确定删除？" @confirm="deleteBanner(row.id)">
+                        <template #reference><el-button text type="danger" size="small">删除</el-button></template>
+                      </el-popconfirm>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+              
+              <!-- Lower Swiper -->
+              <div class="card-section mb-20">
+                <div class="card-header">
+                  <h3>📷 横向轮播</h3>
+                  <el-button type="primary" size="small" @click="showSwiperDialog()"><el-icon><Plus /></el-icon>添加</el-button>
+                </div>
+                <el-table :data="lowerSwiper" v-loading="homepageLoading" stripe class="modern-table">
+                  <el-table-column label="图片" width="100">
+                    <template #default="{ row }"><el-image v-if="row.image" :src="row.image" fit="cover" style="width:60px;height:40px;border-radius:4px" /></template>
+                  </el-table-column>
+                  <el-table-column prop="title" label="标题" />
+                  <el-table-column prop="link" label="链接" />
+                  <el-table-column prop="sort_order" label="排序" width="80" />
+                  <el-table-column label="操作" width="150">
+                    <template #default="{ row }">
+                      <el-button text type="primary" size="small" @click="showSwiperDialog(row)">编辑</el-button>
+                      <el-popconfirm title="确定删除？" @confirm="deleteSwiper(row.id)">
+                        <template #reference><el-button text type="danger" size="small">删除</el-button></template>
+                      </el-popconfirm>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+              
+              <!-- Three Images -->
+              <div class="card-section">
+                <div class="card-header">
+                  <h3>🖼️ 三图展示</h3>
+                  <el-button type="primary" size="small" @click="showThreeDialog()"><el-icon><Plus /></el-icon>添加</el-button>
+                </div>
+                <el-table :data="threeImages" v-loading="homepageLoading" stripe class="modern-table">
+                  <el-table-column label="图片" width="100">
+                    <template #default="{ row }"><el-image v-if="row.image" :src="row.image" fit="cover" style="width:60px;height:40px;border-radius:4px" /></template>
+                  </el-table-column>
+                  <el-table-column prop="link" label="链接" />
+                  <el-table-column prop="sort_order" label="排序" width="80" />
+                  <el-table-column label="操作" width="150">
+                    <template #default="{ row }">
+                      <el-button text type="primary" size="small" @click="showThreeDialog(row)">编辑</el-button>
+                      <el-popconfirm title="确定删除？" @confirm="deleteThree(row.id)">
+                        <template #reference><el-button text type="danger" size="small">删除</el-button></template>
+                      </el-popconfirm>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+              
+              <!-- Banner Dialog -->
+              <el-dialog v-model="bannerDialog.visible" :title="bannerDialog.isEdit ? '编辑Banner' : '添加Banner'" width="500px">
+                <el-form :model="bannerDialog.form" label-width="80px">
+                  <el-form-item label="图片URL"><el-input v-model="bannerDialog.form.image" /></el-form-item>
+                  <el-form-item label="标题"><el-input v-model="bannerDialog.form.title" /></el-form-item>
+                  <el-form-item label="链接"><el-input v-model="bannerDialog.form.link" /></el-form-item>
+                  <el-form-item label="排序"><el-input-number v-model="bannerDialog.form.sort_order" :min="0" /></el-form-item>
+                  <el-form-item label="启用"><el-switch v-model="bannerDialog.form.is_active" /></el-form-item>
+                </el-form>
+                <template #footer>
+                  <el-button @click="bannerDialog.visible = false">取消</el-button>
+                  <el-button type="primary" @click="saveBanner" :loading="bannerDialog.saving">保存</el-button>
+                </template>
+              </el-dialog>
+              
+              <!-- Swiper Dialog -->
+              <el-dialog v-model="swiperDialog.visible" :title="swiperDialog.isEdit ? '编辑轮播' : '添加轮播'" width="500px">
+                <el-form :model="swiperDialog.form" label-width="80px">
+                  <el-form-item label="图片URL"><el-input v-model="swiperDialog.form.image" /></el-form-item>
+                  <el-form-item label="标题"><el-input v-model="swiperDialog.form.title" /></el-form-item>
+                  <el-form-item label="链接"><el-input v-model="swiperDialog.form.link" /></el-form-item>
+                  <el-form-item label="排序"><el-input-number v-model="swiperDialog.form.sort_order" :min="0" /></el-form-item>
+                  <el-form-item label="启用"><el-switch v-model="swiperDialog.form.is_active" /></el-form-item>
+                </el-form>
+                <template #footer>
+                  <el-button @click="swiperDialog.visible = false">取消</el-button>
+                  <el-button type="primary" @click="saveSwiper" :loading="swiperDialog.saving">保存</el-button>
+                </template>
+              </el-dialog>
+              
+              <!-- Three Images Dialog -->
+              <el-dialog v-model="threeDialog.visible" :title="threeDialog.isEdit ? '编辑三图' : '添加三图'" width="500px">
+                <el-form :model="threeDialog.form" label-width="80px">
+                  <el-form-item label="图片URL"><el-input v-model="threeDialog.form.image" /></el-form-item>
+                  <el-form-item label="链接"><el-input v-model="threeDialog.form.link" /></el-form-item>
+                  <el-form-item label="排序"><el-input-number v-model="threeDialog.form.sort_order" :min="0" /></el-form-item>
+                  <el-form-item label="启用"><el-switch v-model="threeDialog.form.is_active" /></el-form-item>
+                </el-form>
+                <template #footer>
+                  <el-button @click="threeDialog.visible = false">取消</el-button>
+                  <el-button type="primary" @click="saveThree" :loading="threeDialog.saving">保存</el-button>
+                </template>
+              </el-dialog>
+            </div>
+            
+            <!-- Media -->
+            <div v-show="currentPage === 'media'" class="page-media">
+              <div class="page-toolbar">
+                <el-select v-model="mediaFilter.prefix" placeholder="全部目录" clearable @change="loadMedia" style="width:150px">
+                  <el-option label="images" value="images" />
+                  <el-option label="videos" value="videos" />
+                  <el-option label="banners" value="banners" />
+                  <el-option label="products" value="products" />
+                </el-select>
+                <el-button type="primary" @click="uploadDialog = true"><el-icon><Upload /></el-icon>上传文件</el-button>
+                <el-button @click="loadMedia"><el-icon><Refresh /></el-icon>刷新</el-button>
+              </div>
+              
+              <div class="card-section">
+                <div v-loading="mediaLoading" class="media-grid">
+                  <div v-for="item in mediaList" :key="item.key" class="media-item" @click="previewMedia(item)">
+                    <div class="media-preview">
+                      <el-image v-if="isImage(item.key)" :src="item.url" fit="cover" style="width:100%;height:100%"></el-image>
+                      <video v-else-if="isVideo(item.key)" :src="item.url" preload="metadata" muted style="width:100%;height:100%;object-fit:cover"></video>
+                      <div v-else class="file-icon"><el-icon :size="32"><Document /></el-icon></div>
+                    </div>
+                    <div class="media-info">
+                      <div class="media-name" :title="item.name">{{ item.name }}</div>
+                      <div class="media-meta">{{ formatSize(item.size) }}</div>
+                    </div>
+                    <div class="media-actions">
+                      <el-button size="small" @click.stop="copyUrl(item.url)">复制</el-button>
+                      <el-popconfirm title="确定删除？" @confirm="deleteMedia(item.key)">
+                        <template #reference><el-button size="small" type="danger" @click.stop>删除</el-button></template>
+                      </el-popconfirm>
+                    </div>
+                  </div>
+                  <el-empty v-if="!mediaList.length && !mediaLoading" description="暂无文件" />
+                </div>
+              </div>
+              
+              <!-- Upload Dialog -->
+              <el-dialog v-model="uploadDialog" title="上传文件" width="500px">
+                <el-form label-width="80px">
+                  <el-form-item label="目录">
+                    <el-select v-model="uploadFolder" style="width:100%">
+                      <el-option label="images" value="images" />
+                      <el-option label="videos" value="videos" />
+                      <el-option label="banners" value="banners" />
+                      <el-option label="products" value="products" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="文件">
+                    <el-upload
+                      v-model:file-list="uploadFiles"
+                      :auto-upload="false"
+                      drag
+                      multiple
+                      accept="image/*,video/*"
+                    >
+                      <el-icon :size="40" style="color:var(--text-muted)"><UploadFilled /></el-icon>
+                      <div style="margin-top:8px;color:var(--text-secondary)">拖拽文件到此处或点击上传</div>
+                    </el-upload>
+                  </el-form-item>
+                </el-form>
+                <template #footer>
+                  <el-button @click="uploadDialog = false">取消</el-button>
+                  <el-button type="primary" @click="handleUpload" :loading="uploading" :disabled="!uploadFiles.length">上传</el-button>
+                </template>
+              </el-dialog>
+              
+              <!-- Preview Dialog -->
+              <el-dialog v-model="previewDialog.visible" :title="previewDialog.item?.name" width="700px">
+                <div style="text-align:center">
+                  <el-image v-if="previewDialog.item && isImage(previewDialog.item.key)" :src="previewDialog.item.url" fit="contain" style="max-height:400px"></el-image>
+                  <video v-else-if="previewDialog.item && isVideo(previewDialog.item.key)" :src="previewDialog.item.url" controls style="max-width:100%;max-height:400px"></video>
+                </div>
+                <el-input :model-value="previewDialog.item?.url" readonly style="margin-top:16px">
+                  <template #append><el-button @click="copyUrl(previewDialog.item?.url)">复制链接</el-button></template>
+                </el-input>
+              </el-dialog>
+            </div>
+          </el-main>
+        </el-container>
+      </el-container>
+  </div>
+  
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/element-plus"></script>
+  <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+  <script src="https://unpkg.com/echarts@5/dist/echarts.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
