@@ -284,6 +284,9 @@ app.use((err, req, res, next) => {
   });
 });
 
+// 启动定时任务
+const orderTimeoutTask = require("./tasks/orderTimeoutTask");
+
 app.listen(PORT, '0.0.0.0', () => {
   const os = require('os');
   const networkInterfaces = os.networkInterfaces();
@@ -305,4 +308,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log("本地访问: http://localhost:" + PORT);
   console.log("IP访问: http://" + serverIp + ":" + PORT);
   console.log("API文档: http://" + serverIp + ":" + PORT + "/api-docs");
+  
+  // 启动订单超时检查任务
+  orderTimeoutTask.start();
 });

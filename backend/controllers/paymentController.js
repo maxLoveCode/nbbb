@@ -317,9 +317,9 @@ class PaymentController {
         // 使用 setImmediate 确保在响应返回后再执行同步，避免阻塞回调响应
         setImmediate(async () => {
           try {
-            const orderController = require('./orderController');
-            // 调用内部同步方法（异步执行，不阻塞）
-            await orderController._syncOrderToJushuitanInternal(orderId, userId);
+            const orderService = require('../services/orderService');
+            // 调用订单同步方法（异步执行，不阻塞）
+            await orderService.syncOrderToJushuitan(orderId, userId);
             logger.info('PAYMENT', '支付成功后订单同步到聚水潭成功', {
               orderId,
               orderNo,

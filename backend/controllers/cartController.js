@@ -2,7 +2,7 @@ const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const cartValidator = require("../utils/cartValidator");
 const jushuitanClient = require("../services/jushuitanClient");
-const { convertImageUrls } = require("../utils/imageUrlConverter");
+const { convertImageUrls, convertImageUrl } = require("../utils/imageUrlConverter");
 
 const pool = new Pool({
   host: "localhost",
@@ -17,12 +17,75 @@ const pool = new Pool({
  * 特殊规则：
  * 1. 物品无法叠加：每个商品/SKU只能有一条记录
  * 2. 数量上限：每件衣服最多3件
+ * 3. 添加时存储商品快照，列表时只查库存
  */
 class CartController {
   /**
+   * 从聚水潭获取商品快照信息
+   * @param {string} productCode - 商品编码
+   * @param {string} skuId - SKU编码
+   * @returns {Promise<Object>} 商品快照
+   */
+  async fetchProductSnapshot(productCode, skuId) {
+    try {
+      const response = await jushuitanClient.call(
+        "jushuitan.item.query",
+        {
+          i_ids: [productCode],
+          page_index: 1,
+          page_size: 1
+        },
+        {},
+        "https://openapi.jushuitan.com/open/mall/item/query"
+      );
+
+      // 解析响应
+      let items = null;
+      if (response.data && response.data.datas) {
+        items = response.data.datas;
+      } else if (response.datas) {
+        items = response.datas;
+      }
+
+      if (!items || items.length === 0) {
+        return null;
+      }
+
+      const product = items[0];
+      let snapshot = {
+        product_name: product.name,
+        product_pic: convertImageUrl(product.pic),
+        original_price: product.s_price,
+        sale_price: product.s_price,
+        sku_properties: null,
+        sku_pic: null
+      };
+
+      // 如果有SKU，获取SKU信息
+      if (skuId && product.skus && product.skus.length > 0) {
+        const sku = product.skus.find(s => s.sku_id === skuId);
+        if (sku) {
+          snapshot.sale_price = sku.sale_price || product.s_price;
+          snapshot.sku_properties = sku.properties_value;
+          snapshot.sku_pic = sku.pic ? convertImageUrl(sku.pic) : null;
+        }
+      }
+
+      return snapshot;
+    } catch (error) {
+      logger.error('CART', '获取商品快照失败', {
+        product_code: productCode,
+        sku_id: skuId,
+        error: error.message
+      });
+      return null;
+    }
+  }
+
+  /**
    * 添加商品到购物车
    * POST /api/cart/add
-   * 规则：每件单独存一行，最多3行（3件）
+   * 规则：每件单独存一行，最多3行（3件），存储商品快照
    */
   async addToCart(req, res) {
     try {
@@ -87,16 +150,43 @@ class CartController {
         });
       }
 
+      // 获取商品快照（只需获取一次）
+      const snapshot = await this.fetchProductSnapshot(product_code, sku_id);
+      
+      if (!snapshot) {
+        logger.warn('CART', '商品信息获取失败', {
+          userId,
+          product_code,
+          sku_id,
+          ip
+        });
+        // 商品不存在或获取失败，仍允许添加，但不存储快照
+      }
+
       const insertCount = Math.min(quantity, remaining);
       const insertedItems = [];
 
-      // 按件插入多行，quantity 恒为 1
+      // 按件插入多行，quantity 恒为 1，包含商品快照
       for (let i = 0; i < insertCount; i++) {
         const result = await pool.query(
-          `INSERT INTO shopping_cart (user_id, product_code, sku_id, quantity)
-           VALUES ($1, $2, $3, 1)
-           RETURNING id, product_code, sku_id, quantity, selected, created_at, updated_at`,
-          [userId, product_code, sku_id || null]
+          `INSERT INTO shopping_cart (
+            user_id, product_code, sku_id, quantity,
+            product_name, product_pic, sale_price, original_price, sku_properties, sku_pic
+          )
+           VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9)
+           RETURNING id, product_code, sku_id, quantity, selected, created_at, updated_at,
+                     product_name, product_pic, sale_price, original_price, sku_properties, sku_pic`,
+          [
+            userId, 
+            product_code, 
+            sku_id || null,
+            snapshot?.product_name || null,
+            snapshot?.product_pic || null,
+            snapshot?.sale_price || null,
+            snapshot?.original_price || null,
+            snapshot?.sku_properties || null,
+            snapshot?.sku_pic || null
+          ]
         );
         insertedItems.push(result.rows[0]);
       }
@@ -104,10 +194,11 @@ class CartController {
       const totalQuantity = existingCount + insertCount;
       const isMax = totalQuantity >= maxAllowed;
 
-      logger.info('CART', '新增商品到购物车（按件）', {
+      logger.info('CART', '新增商品到购物车（含快照）', {
         userId,
         product_code,
         sku_id,
+        product_name: snapshot?.product_name,
         requested_quantity: quantity,
         inserted: insertCount,
         total_quantity: totalQuantity,
@@ -147,7 +238,7 @@ class CartController {
   /**
    * 获取购物车列表
    * GET /api/cart
-   * 每件一行，quantity 恒为1，不再二次展开
+   * 优化版：使用本地快照 + 只查库存（省去商品详情API调用）
    */
   async getCart(req, res) {
     try {
@@ -156,22 +247,34 @@ class CartController {
 
       logger.info('CART', '获取购物车列表', { userId, ip });
 
+      // 查询购物车（包含快照字段）
       const cartRows = await pool.query(
-        `SELECT id, product_code, sku_id, quantity, selected, created_at, updated_at
+        `SELECT id, product_code, sku_id, quantity, selected, created_at, updated_at,
+                product_name, product_pic, sale_price, original_price, properties_value, sku_pic
          FROM shopping_cart
          WHERE user_id = $1
          ORDER BY updated_at DESC`,
         [userId]
       );
 
-      // 批量检查商品有效性和库存
-      logger.info('CART', '开始检查商品有效性', {
+      // 检查是否有快照数据
+      const hasSnapshot = cartRows.rows.some(row => row.product_name);
+      
+      logger.info('CART', '开始检查商品库存', {
         userId,
         item_count: cartRows.rows.length,
+        has_snapshot: hasSnapshot,
         ip
       });
 
-      const validityChecks = await cartValidator.batchCheckValidity(cartRows.rows);
+      let validityChecks;
+      if (hasSnapshot) {
+        // 使用快照 + 只查库存（优化版）
+        validityChecks = await cartValidator.batchCheckWithSnapshot(cartRows.rows);
+      } else {
+        // 兼容旧数据：没有快照时仍查商品详情
+        validityChecks = await cartValidator.batchCheckValidity(cartRows.rows);
+      }
 
       const invalidItems = validityChecks.filter(check => !check.validity.valid);
       const validItems = validityChecks.filter(check => check.validity.valid);
@@ -204,7 +307,8 @@ class CartController {
         index: 1,
         product: validity.product || null,
         valid: validity.valid,
-        invalid_reason: validity.valid ? undefined : validity.reason
+        invalid_reason: validity.valid ? undefined : validity.reason,
+        stock: validity.stock // 库存数量
       }));
 
       // 统计信息（基于行）
@@ -224,6 +328,7 @@ class CartController {
         valid_items: validItems.length,
         invalid_items: invalidItems.length,
         expanded_items: items.length,
+        use_snapshot: hasSnapshot,
         ip
       });
 

@@ -3,6 +3,7 @@ const router = express.Router();
 const orderService = require('../services/orderService');
 const auth = require('../middleware/auth');
 const { Pool } = require('pg');
+const jushuitanClient = require('../services/jushuitanClient');
 
 const pool = new Pool({
   host: "localhost",
@@ -40,24 +41,112 @@ router.post('/', auth, async (req, res) => {
     const { 
       items,                    // 标准格式
       goodsRequestList,         // 小程序格式
+      cart_item_ids,            // 购物车结算格式
       address_id, 
       address,                  // 标准格式
       receiverInfo,             // 小程序格式
+      receiver_info,            // 购物车结算格式
       userAddressReq,           // 小程序格式
       buyer_message,
-      remark                    // 小程序格式
+      remark,                   // 小程序格式
+      freight: reqFreight,      // 运费
+      shop_id                   // 店铺ID
     } = req.body;
-    
-    // 商品列表：优先使用 items，其次 goodsRequestList
-    const orderItems = items || goodsRequestList;
     
     console.log('[ORDER] 创建订单请求:', { 
       userId, 
-      items_count: orderItems?.length, 
-      address_id, 
-      has_address: !!(address || receiverInfo || userAddressReq),
-      body_keys: Object.keys(req.body)
+      body_keys: Object.keys(req.body),
+      cart_item_ids,
+      has_items: !!(items || goodsRequestList)
     });
+    
+    // 商品列表：支持多种来源
+    let orderItems = items || goodsRequestList;
+    
+    // 如果传的是购物车项ID，从购物车获取商品信息
+    if ((!orderItems || orderItems.length === 0) && cart_item_ids && Array.isArray(cart_item_ids) && cart_item_ids.length > 0) {
+      console.log('[ORDER] 从购物车获取商品:', cart_item_ids);
+      
+      const cartResult = await pool.query(
+        `SELECT id, product_code, sku_id, quantity, selected
+         FROM shopping_cart 
+         WHERE id = ANY($1) AND user_id = $2`,
+        [cart_item_ids, userId]
+      );
+      
+      if (cartResult.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          code: 'Error',
+          message: '购物车商品不存在或已失效'
+        });
+      }
+      
+      // 从聚水潭获取商品详情（包含价格）
+      orderItems = [];
+      for (const cartItem of cartResult.rows) {
+        try {
+          // 调用聚水潭商品查询
+          const biz = {
+            i_ids: [cartItem.product_code],
+            page_index: 1,
+            page_size: 1
+          };
+          const result = await jushuitanClient.call(
+            "jushuitan.item.query",
+            biz,
+            {},
+            "https://openapi.jushuitan.com/open/mall/item/query"
+          );
+          
+          let productInfo = { name: cartItem.product_code, price: 0, pic: null };
+          
+          if (result.code === 0 && result.data) {
+            const items = result.data.datas || result.data.data?.datas || [];
+            if (items.length > 0) {
+              const item = items[0];
+              productInfo.name = item.name || cartItem.product_code;
+              productInfo.price = item.s_price ? Math.round(item.s_price * 100) : 0; // 转为分
+              productInfo.pic = item.pic;
+              
+              // 找到对应的SKU获取更精确的信息
+              if (item.skus && item.skus.length > 0) {
+                const sku = item.skus.find(s => s.sku_id === cartItem.sku_id);
+                if (sku) {
+                  productInfo.name = sku.name || productInfo.name;
+                  productInfo.price = sku.s_price ? Math.round(sku.s_price * 100) : productInfo.price;
+                  productInfo.spec = sku.properties_value;
+                }
+              }
+            }
+          }
+          
+          orderItems.push({
+            product_code: cartItem.product_code,
+            sku_id: cartItem.sku_id,
+            name: productInfo.name,
+            image: productInfo.pic,
+            price: productInfo.price,
+            quantity: cartItem.quantity,
+            spec: productInfo.spec || null
+          });
+        } catch (err) {
+          console.error('[ORDER] 获取商品信息失败:', cartItem.product_code, err.message);
+          // 即使获取失败，也添加基本信息
+          orderItems.push({
+            product_code: cartItem.product_code,
+            sku_id: cartItem.sku_id,
+            name: cartItem.product_code,
+            image: null,
+            price: 0,
+            quantity: cartItem.quantity,
+            spec: null
+          });
+        }
+      }
+      
+      console.log('[ORDER] 购物车商品转换完成:', orderItems.length, '件');
+    }
     
     // 参数验证
     if (!orderItems || !Array.isArray(orderItems) || orderItems.length === 0) {
@@ -69,7 +158,7 @@ router.post('/', auth, async (req, res) => {
     }
     
     // 获取收货地址：支持多种格式
-    let receiverAddress = address || receiverInfo || userAddressReq;
+    let receiverAddress = address || receiverInfo || receiver_info || userAddressReq;
     
     if (address_id && !receiverAddress) {
       const addrResult = await pool.query(
@@ -115,7 +204,8 @@ router.post('/', auth, async (req, res) => {
     
     // 判断金额单位：如果总金额小于100，可能已经是元
     const payAmount = totalAmount > 1000 ? totalAmount / 100 : totalAmount;
-    const freight = 0; // 运费，暂时为0
+    // 运费：使用请求中的运费，默认为0
+    const freight = reqFreight || 0;
     
     // 解析收货地址 - 兼容多种字段名
     const addrState = receiverAddress.receiver_state || receiverAddress.provinceName || receiverAddress.province || '';
@@ -128,15 +218,16 @@ router.post('/', auth, async (req, res) => {
     // 创建订单
     const orderResult = await client.query(`
       INSERT INTO orders (
-        user_id, order_no, shop_buyer_id, shop_status,
+        user_id, order_number, order_no, shop_buyer_id, shop_status,
         receiver_state, receiver_city, receiver_district, receiver_address,
         receiver_name, receiver_phone, receiver_mobile,
-        pay_amount, freight, total_amount, buyer_message
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        pay_amount, freight, total_amount, buyer_message, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
     `, [
       userId,
-      orderNo,
+      orderNo,  // order_number (必填)
+      orderNo,  // order_no
       openid,
       'WAIT_BUYER_PAY',
       addrState,
@@ -149,7 +240,8 @@ router.post('/', auth, async (req, res) => {
       payAmount,
       freight,
       payAmount + freight,
-      buyer_message || remark || null
+      buyer_message || remark || null,
+      'pending'  // status
     ]);
     
     const order = orderResult.rows[0];
@@ -178,8 +270,9 @@ router.post('/', auth, async (req, res) => {
       await client.query(`
         INSERT INTO order_items (
           order_id, product_code, sku_id, name, properties_value, pic,
-          price, base_price, amount, qty, outer_oi_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          price, base_price, amount, qty, outer_oi_id,
+          quantity, unit_price, total_price
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       `, [
         order.id,
         productCode,
@@ -191,8 +284,20 @@ router.post('/', auth, async (req, res) => {
         itemPrice,
         itemAmount,
         qty,
-        outerOiId
+        outerOiId,
+        qty,           // quantity (必填)
+        itemPrice,     // unit_price (必填)
+        itemAmount     // total_price (必填)
       ]);
+    }
+    
+    // 如果是从购物车结算，删除已下单的购物车项
+    if (cart_item_ids && cart_item_ids.length > 0) {
+      await client.query(
+        'DELETE FROM shopping_cart WHERE id = ANY($1) AND user_id = $2',
+        [cart_item_ids, userId]
+      );
+      console.log('[ORDER] 已删除购物车项:', cart_item_ids.length, '件');
     }
     
     await client.query('COMMIT');
@@ -235,25 +340,29 @@ router.post('/', auth, async (req, res) => {
 });
 
 // 获取当前用户的订单列表
+// GET /api/orders?tab=all|unpaid|unshipped|unreceived|completed|cancelled&page=1&pageSize=10
 router.get('/', auth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { page = 1, pageSize = 10, status } = req.query;
+    const { page = 1, pageSize = 10, status, tab } = req.query;
     
     const result = await orderService.getUserOrders(userId, {
       page: parseInt(page),
       pageSize: parseInt(pageSize),
-      status: status || null
+      status: status || null,
+      tab: tab || null
     });
     
     res.json({
       success: true,
+      code: 0,
       data: result
     });
   } catch (error) {
     console.error('获取订单列表失败:', error);
     res.status(500).json({
       success: false,
+      code: 500,
       message: '获取订单列表失败'
     });
   }
@@ -283,6 +392,74 @@ router.get('/:id', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: '获取订单详情失败'
+    });
+  }
+});
+
+// 取消订单
+// POST /api/orders/:id/cancel
+router.post('/:id/cancel', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    // 查询订单，验证归属
+    const orderResult = await pool.query(
+      'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
+      [id, userId]
+    );
+    
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        code: 404,
+        message: '订单不存在'
+      });
+    }
+    
+    const order = orderResult.rows[0];
+    
+    // 只有待支付状态的订单可以取消
+    if (order.shop_status !== 'WAIT_BUYER_PAY') {
+      return res.status(400).json({
+        success: false,
+        code: 400,
+        message: '只有待支付的订单可以取消'
+      });
+    }
+    
+    // 更新订单状态
+    const updateResult = await pool.query(`
+      UPDATE orders 
+      SET status = 'cancelled',
+          shop_status = 'TRADE_CLOSED',
+          cancel_time = NOW(),
+          cancel_reason = $1,
+          updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+    `, [reason || '用户主动取消', id]);
+    
+    console.log(`[ORDER] 订单取消成功: ${order.order_number}, 原因: ${reason || '用户主动取消'}`);
+    
+    res.json({
+      success: true,
+      code: 0,
+      message: '订单取消成功',
+      data: {
+        id: updateResult.rows[0].id,
+        order_number: updateResult.rows[0].order_number,
+        status: updateResult.rows[0].status,
+        shop_status: updateResult.rows[0].shop_status
+      }
+    });
+  } catch (error) {
+    console.error('取消订单失败:', error);
+    res.status(500).json({
+      success: false,
+      code: 500,
+      message: '取消订单失败: ' + error.message
     });
   }
 });

@@ -130,6 +130,73 @@ router.post("/item/query", async (req, res) => {
   await safeCall(res, "jushuitan.item.query", filteredBiz, {}, "https://openapi.jushuitan.com/open/mall/item/query");
 });
 
+// ==================== Token 管理接口 ====================
+
+/**
+ * 获取 Token 状态
+ * GET /api/jst/token/status
+ */
+router.get("/token/status", (req, res) => {
+  try {
+    const status = jst.getTokenStatus();
+    res.json({
+      success: true,
+      data: status
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+/**
+ * 手动刷新 Token
+ * POST /api/jst/token/refresh
+ */
+router.post("/token/refresh", async (req, res) => {
+  try {
+    const result = await jst.refreshToken();
+    res.json({
+      success: true,
+      message: "Token 刷新成功",
+      data: {
+        expires_at: new Date(result.expires_at).toISOString(),
+        updated_at: new Date(result.updated_at).toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Token 刷新失败: " + error.message
+    });
+  }
+});
+
+/**
+ * 重新获取初始 Token（用于 Token 完全过期的情况）
+ * POST /api/jst/token/init
+ */
+router.post("/token/init", async (req, res) => {
+  try {
+    const result = await jst.getInitToken();
+    res.json({
+      success: true,
+      message: "初始 Token 获取成功",
+      data: {
+        expires_at: new Date(result.expires_at).toISOString(),
+        updated_at: new Date(result.updated_at).toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "获取初始 Token 失败: " + error.message
+    });
+  }
+});
+
 module.exports = router;
 
 
