@@ -24,10 +24,13 @@ const pool = new Pool({
  * - category_id: 选中的二级分类ID（可选，不传则返回第一个分类的商品）
  * - pageNum: 页码（可选，默认1）
  * - pageSize: 每页数量（可选，默认20）
+ * - sort: 排序方式（可选，price_asc=价格升序, price_desc=价格降序，不传=默认顺序）
+ * 
+ * 优化：使用批量查询，减少聚水潭API调用次数（从 N*2 次降为 2 次）
  */
 router.get("/", async (req, res) => {
   try {
-    const { category_id, pageNum = 1, pageSize = 20 } = req.query;
+    const { category_id, pageNum = 1, pageSize = 20, sort } = req.query;
     const pageIndex = parseInt(pageNum);
     const limit = parseInt(pageSize);
 
@@ -87,132 +90,143 @@ router.get("/", async (req, res) => {
         const productCodes = selectedCategory.product_codes;
         total = productCodes.length;
 
-        // 分页处理
-        const startIndex = (pageIndex - 1) * limit;
-        const endIndex = startIndex + limit;
-        const paginatedCodes = productCodes.slice(startIndex, endIndex);
+        // 判断是否需要价格排序
+        const needsPriceSort = sort === 'price_asc' || sort === 'price_desc';
+        
+        // 如果需要价格排序，先查询全部商品；否则先分页再查询
+        const codesToQuery = needsPriceSort 
+          ? productCodes 
+          : productCodes.slice((pageIndex - 1) * limit, pageIndex * limit);
 
-        // 批量查询商品详情
-        if (paginatedCodes.length > 0) {
-          const productsPromises = paginatedCodes.map(async (productCode) => {
-            try {
-              // 1. 调用聚水潭商品查询接口
-              const biz = {
-                i_ids: [productCode],
+        // 批量查询商品详情（优化：一次API调用查询所有商品）
+        if (codesToQuery.length > 0) {
+          try {
+            // 1. 批量查询商品信息（一次API调用）
+            const productResult = await jushuitanClient.call(
+              "jushuitan.item.query",
+              {
+                i_ids: codesToQuery,
                 page_index: 1,
-                page_size: 1
-              };
+                page_size: codesToQuery.length + 10
+              },
+              {},
+              "https://openapi.jushuitan.com/open/mall/item/query"
+            );
 
-              const result = await jushuitanClient.call(
-                "jushuitan.item.query",
-                biz,
-                {},
-                "https://openapi.jushuitan.com/open/mall/item/query"
-              );
-
-              if (result.code !== 0) {
-                return null;
+            // 解析商品响应
+            let items = null;
+            if (productResult.code === 0) {
+              if (productResult.data && productResult.data.datas) {
+                items = productResult.data.datas;
+              } else if (productResult.data && productResult.data.data && productResult.data.data.datas) {
+                items = productResult.data.data.datas;
+              } else if (productResult.data && productResult.data.items) {
+                items = productResult.data.items;
+              } else if (productResult.items) {
+                items = productResult.items;
+              } else if (productResult.datas) {
+                items = productResult.datas;
               }
+            }
 
-              // 解析响应数据
-              let items = null;
-              if (result.data && result.data.datas) {
-                items = result.data.datas;
-              } else if (result.data && result.data.data && result.data.data.datas) {
-                items = result.data.data.datas;
-              } else if (result.data && result.data.items) {
-                items = result.data.items;
-              } else if (result.items) {
-                items = result.items;
-              } else if (result.datas) {
-                items = result.datas;
+            // 构建商品Map（商品编码 -> 商品信息）
+            const productMap = new Map();
+            if (items && items.length > 0) {
+              for (const item of items) {
+                // 处理特殊情况：如果item只有skus数组
+                if (item.skus && item.skus.length > 0 && !item.i_id) {
+                  const firstSku = item.skus[0];
+                  item.i_id = firstSku.i_id;
+                  item.name = firstSku.name || item.name;
+                  item.brand = firstSku.brand || item.brand;
+                  item.pic = firstSku.pic || item.pic;
+                }
+                if (item.i_id) {
+                  productMap.set(item.i_id, item);
+                }
               }
+            }
 
-              if (!items || items.length === 0) {
-                return null;
-              }
-
-              const item = items[0];
-              
-              // 处理特殊情况：如果item只有skus数组，需要从第一个sku获取商品信息
-              if (item.skus && item.skus.length > 0 && !item.i_id) {
-                const firstSku = item.skus[0];
-                item.i_id = firstSku.i_id;
-                item.name = firstSku.name || item.name;
-                item.brand = firstSku.brand || item.brand;
-                item.pic = firstSku.pic || item.pic;
-              }
-
-              // 2. 查询库存
-              let stock = 0;
-              let inventoryMap = {};
-              try {
-                const inventoryBiz = {
-                  i_ids: productCode,
+            // 2. 批量查询库存（一次API调用）
+            const inventoryMap = new Map();
+            try {
+              const inventoryResult = await jushuitanClient.call(
+                "jushuitan.inventory.query",
+                {
+                  i_ids: codesToQuery.join(','),
                   page_index: 1,
-                  page_size: 100,
+                  page_size: Math.max(100, codesToQuery.length),
                   has_lock_qty: true,
                   ts: Math.floor(Date.now() / 1000)
-                };
+                },
+                {},
+                "https://openapi.jushuitan.com/open/inventory/query"
+              );
 
-                const inventoryResult = await jushuitanClient.call(
-                  "jushuitan.inventory.query",
-                  inventoryBiz,
-                  {},
-                  "https://openapi.jushuitan.com/open/inventory/query"
-                );
-
-                if (inventoryResult && inventoryResult.code === 0 && inventoryResult.data && 
-                    Array.isArray(inventoryResult.data.inventorys)) {
-                  // 构建库存映射
-                  inventoryResult.data.inventorys.forEach(inv => {
-                    const key = inv.sku_id || inv.i_id;
-                    if (key) {
-                      inventoryMap[key] = {
-                        qty: typeof inv.qty === "number" ? inv.qty : 0
-                      };
-                    }
-                  });
-                  
-                  // 计算总库存（所有SKU的库存总和）
-                  stock = inventoryResult.data.inventorys.reduce((sum, inv) => {
-                    return sum + (parseInt(inv.qty) || 0);
-                  }, 0);
+              if (inventoryResult && inventoryResult.code === 0 && 
+                  inventoryResult.data && Array.isArray(inventoryResult.data.inventorys)) {
+                // 按商品编码分组库存
+                for (const inv of inventoryResult.data.inventorys) {
+                  const productCode = inv.i_id;
+                  if (productCode) {
+                    const current = inventoryMap.get(productCode) || 0;
+                    inventoryMap.set(productCode, current + (parseInt(inv.qty) || 0));
+                  }
                 }
-              } catch (invError) {
-                console.error(`查询商品 ${productCode} 库存失败:`, invError.message);
               }
-
-              // 3. 获取价格信息（参考商品详情接口的逻辑）
-              // 价格：使用 s_price（销售价），转换为分
-              const price = item.s_price ? Math.round(item.s_price * 100) : 0;
-              // 原价：使用 market_price 或 c_price，转换为分
-              const originalPrice = item.market_price 
-                ? Math.round(item.market_price * 100) 
-                : (item.c_price ? Math.round(item.c_price * 100) : null);
-
-              return {
-                product_code: productCode,
-                name: item.name || productCode,
-                image: item.pic ? convertImageUrl(item.pic, { forceHttps: true }) : null,
-                price: price,
-                original_price: originalPrice,
-                stock: stock,
-                i_id: item.i_id || null
-              };
-            } catch (error) {
-              console.error(`查询商品 ${productCode} 失败:`, error.message);
-              return null;
+            } catch (invError) {
+              console.error("批量查询库存失败:", invError.message);
             }
-          });
 
-          const productsResults = await Promise.all(productsPromises);
-          products = productsResults.filter(p => p !== null);
+            // 3. 组装商品数据
+            const allProducts = [];
+            for (const productCode of codesToQuery) {
+              const item = productMap.get(productCode);
+              if (item) {
+                const price = item.s_price ? Math.round(item.s_price * 100) : 0;
+                const originalPrice = item.market_price 
+                  ? Math.round(item.market_price * 100) 
+                  : (item.c_price ? Math.round(item.c_price * 100) : null);
+
+                allProducts.push({
+                  product_code: productCode,
+                  name: item.name || productCode,
+                  image: item.pic ? convertImageUrl(item.pic, { forceHttps: true }) : null,
+                  price: price,
+                  original_price: originalPrice,
+                  stock: inventoryMap.get(productCode) || 0,
+                  i_id: item.i_id || null
+                });
+              }
+            }
+
+            // 4. 排序处理（在分页之前）
+            if (sort === 'price_asc') {
+              allProducts.sort((a, b) => a.price - b.price);
+            } else if (sort === 'price_desc') {
+              allProducts.sort((a, b) => b.price - a.price);
+            }
+            // 不传sort或其他值：保持原有顺序（数组遍历顺序）
+
+            // 5. 分页处理（排序之后）
+            if (needsPriceSort) {
+              const startIndex = (pageIndex - 1) * limit;
+              const endIndex = startIndex + limit;
+              products = allProducts.slice(startIndex, endIndex);
+            } else {
+              products = allProducts;
+            }
+
+            console.log(`[Shopping] 批量查询完成: ${codesToQuery.length} 个商品, 找到 ${allProducts.length} 个, 排序: ${sort || 'default'}, 返回: ${products.length} 个`);
+
+          } catch (error) {
+            console.error("批量查询商品失败:", error.message);
+          }
         }
       }
     }
 
-    // 4. 构建响应数据
+    // 6. 构建响应数据
     res.json({
       success: true,
       code: 0,

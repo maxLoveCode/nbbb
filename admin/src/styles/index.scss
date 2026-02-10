@@ -175,39 +175,59 @@ html, body {
 }
 
 .el-tag {
-  border-radius: 6px;
+  border-radius: 6px !important;
   font-weight: 500;
   font-size: 11px;
   letter-spacing: 0.5px;
   
-  &--success {
-    --el-tag-bg-color: rgba(74, 222, 128, 0.1);
-    --el-tag-border-color: transparent;
-    --el-tag-text-color: var(--success);
+  // 默认样式 - 深灰底 + 浅灰文字
+  background-color: #2a2a2a !important;
+  border-color: #3a3a3a !important;
+  color: #b0b0b0 !important;
+  
+  // 主题金色
+  &.el-tag--primary {
+    background-color: rgba(201, 169, 98, 0.15) !important;
+    border-color: rgba(201, 169, 98, 0.3) !important;
+    color: #d4b978 !important;
   }
   
-  &--warning {
-    --el-tag-bg-color: rgba(251, 191, 36, 0.1);
-    --el-tag-border-color: transparent;
-    --el-tag-text-color: var(--warning);
+  // 成功绿色
+  &.el-tag--success {
+    background-color: rgba(74, 222, 128, 0.12) !important;
+    border-color: rgba(74, 222, 128, 0.25) !important;
+    color: #6ee7a0 !important;
   }
   
-  &--danger {
-    --el-tag-bg-color: rgba(248, 113, 113, 0.1);
-    --el-tag-border-color: transparent;
-    --el-tag-text-color: var(--danger);
+  // 警告橙色
+  &.el-tag--warning {
+    background-color: rgba(251, 191, 36, 0.12) !important;
+    border-color: rgba(251, 191, 36, 0.25) !important;
+    color: #fcd34d !important;
   }
   
-  &--info {
-    --el-tag-bg-color: rgba(96, 165, 250, 0.1);
-    --el-tag-border-color: transparent;
-    --el-tag-text-color: var(--info);
+  // 危险红色
+  &.el-tag--danger {
+    background-color: rgba(248, 113, 113, 0.12) !important;
+    border-color: rgba(248, 113, 113, 0.25) !important;
+    color: #fca5a5 !important;
   }
   
-  &--primary {
-    --el-tag-bg-color: rgba(201, 169, 98, 0.1);
-    --el-tag-border-color: transparent;
-    --el-tag-text-color: var(--primary);
+  // 信息蓝色
+  &.el-tag--info {
+    background-color: rgba(96, 165, 250, 0.12) !important;
+    border-color: rgba(96, 165, 250, 0.25) !important;
+    color: #93c5fd !important;
+  }
+  
+  // 关闭按钮颜色
+  .el-tag__close {
+    color: inherit !important;
+    
+    &:hover {
+      background-color: rgba(255, 255, 255, 0.15) !important;
+      color: inherit !important;
+    }
   }
 }
 

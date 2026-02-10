@@ -408,4 +408,246 @@ router.delete('/:id/products/:productCode', async (req, res) => {
   }
 });
 
+// ==================== 分类 CRUD 接口 ====================
+
+/**
+ * 获取所有分类（带商品数量）
+ * GET /api/category-page/categories
+ */
+router.get('/categories', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        cpc.*,
+        COUNT(cpp.id) as product_count
+      FROM category_page_categories cpc
+      LEFT JOIN category_page_products cpp ON cpp.category_id = cpc.id AND cpp.is_active = true
+      WHERE cpc.is_active = true
+      GROUP BY cpc.id
+      ORDER BY cpc.sort_order ASC
+    `);
+
+    res.json({
+      success: true,
+      categories: result.rows.map(row => ({
+        ...row,
+        product_count: parseInt(row.product_count) || 0
+      }))
+    });
+  } catch (error) {
+    console.error('获取分类列表失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取分类列表失败: ' + error.message
+    });
+  }
+});
+
+/**
+ * 创建分类
+ * POST /api/category-page/categories
+ */
+router.post('/categories', async (req, res) => {
+  try {
+    const { name, type = 'products', sort_order = 0, is_active = true, description, image } = req.body;
+
+    if (!name) {
+      return res.status(400).json({
+        success: false,
+        message: '分类名称不能为空'
+      });
+    }
+
+    const result = await pool.query(`
+      INSERT INTO category_page_categories (name, type, source, sort_order, is_active, description, image)
+      VALUES ($1, $2, 'custom', $3, $4, $5, $6)
+      RETURNING *
+    `, [name, type, sort_order, is_active, description || null, image || null]);
+
+    res.status(201).json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('创建分类失败:', error);
+    if (error.code === '23505') {
+      return res.status(400).json({
+        success: false,
+        message: '分类名称已存在'
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: '创建分类失败: ' + error.message
+    });
+  }
+});
+
+/**
+ * 更新分类
+ * PUT /api/category-page/categories/:id
+ */
+router.put('/categories/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, type, sort_order, is_active, description, image } = req.body;
+
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (name !== undefined) {
+      updates.push(`name = $${paramCount++}`);
+      values.push(name);
+    }
+    if (type !== undefined) {
+      updates.push(`type = $${paramCount++}`);
+      values.push(type);
+    }
+    if (sort_order !== undefined) {
+      updates.push(`sort_order = $${paramCount++}`);
+      values.push(sort_order);
+    }
+    if (is_active !== undefined) {
+      updates.push(`is_active = $${paramCount++}`);
+      values.push(is_active);
+    }
+    if (description !== undefined) {
+      updates.push(`description = $${paramCount++}`);
+      values.push(description);
+    }
+    if (image !== undefined) {
+      updates.push(`image = $${paramCount++}`);
+      values.push(image);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '没有提供更新字段'
+      });
+    }
+
+    values.push(id);
+    const result = await pool.query(`
+      UPDATE category_page_categories 
+      SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $${paramCount}
+      RETURNING *
+    `, values);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '分类不存在'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('更新分类失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '更新分类失败: ' + error.message
+    });
+  }
+});
+
+/**
+ * 删除分类
+ * DELETE /api/category-page/categories/:id
+ */
+router.delete('/categories/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 先删除关联的商品
+    await pool.query('DELETE FROM category_page_products WHERE category_id = $1', [id]);
+
+    // 再删除分类
+    const result = await pool.query(
+      'DELETE FROM category_page_categories WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '分类不存在'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: '删除成功'
+    });
+  } catch (error) {
+    console.error('删除分类失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '删除分类失败: ' + error.message
+    });
+  }
+});
+
+/**
+ * 获取分类下的商品列表（管理用，带商品详情）
+ * GET /api/category-page/categories/:id/products
+ */
+router.get('/categories/:id/products', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 获取商品编码
+    const codesResult = await pool.query(`
+      SELECT id, product_code, sort_order
+      FROM category_page_products
+      WHERE category_id = $1 AND is_active = true
+      ORDER BY sort_order
+    `, [id]);
+
+    const productCodes = codesResult.rows;
+
+    // 如果有商品，尝试获取详情
+    let products = productCodes.map(row => ({
+      id: row.id,
+      product_code: row.product_code,
+      sort_order: row.sort_order,
+      name: row.product_code // 默认用编码作为名称
+    }));
+
+    // 尝试从聚水潭获取商品名称（可选，不影响主流程）
+    if (productCodes.length > 0) {
+      try {
+        const codes = productCodes.map(r => r.product_code);
+        const jstProducts = await productService.batchGetProductsFromJST(codes);
+        const nameMap = {};
+        jstProducts.forEach(p => {
+          nameMap[p.code] = p.name;
+        });
+        products = products.map(p => ({
+          ...p,
+          name: nameMap[p.product_code] || p.product_code
+        }));
+      } catch (err) {
+        console.log('获取商品名称失败，使用编码:', err.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      products
+    });
+  } catch (error) {
+    console.error('获取分类商品失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取分类商品失败: ' + error.message
+    });
+  }
+});
+
 module.exports = router;

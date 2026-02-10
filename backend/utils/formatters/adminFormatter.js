@@ -106,6 +106,7 @@ function formatOrder(order) {
       skuId: item.sku_id,
       shopSkuId: item.shop_sku_id,
       name: item.name,
+      properties: item.properties_value,
       image: item.pic,
       price: item.price,
       basePrice: item.base_price,

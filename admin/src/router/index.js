@@ -26,7 +26,7 @@ const routes = [
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' }
 ]
 
-const router = createRouter({ history: createWebHistory(), routes })
+const router = createRouter({ history: createWebHistory('/admin/'), routes })
 
 router.beforeEach((to, from, next) => {
   const userStore = useUserStore()
