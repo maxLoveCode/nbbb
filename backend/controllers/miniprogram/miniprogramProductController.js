@@ -31,7 +31,8 @@ class MiniprogramProductController {
         page: parseInt(page),
         pageSize: parseInt(pageSize),
         keyword,
-        category
+        category,
+        userId: req.user?.id || null
       });
 
       res.json(formatter.formatResponse({
@@ -63,7 +64,9 @@ class MiniprogramProductController {
         clientType: 'miniprogram'
       });
 
-      const product = await productService.getProductByCode(code);
+      const product = await productService.getProductByCode(code, {
+        userId: req.user?.id || null
+      });
 
       if (!product) {
         return res.status(404).json(

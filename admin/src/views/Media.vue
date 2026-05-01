@@ -23,10 +23,18 @@
     
     <el-card shadow="hover">
       <div v-loading="loading" class="media-grid">
-        <div v-for="item in mediaList" :key="item.key" class="media-item" @click="preview(item)">
+        <div v-for="item in mediaList" :key="item.name" class="media-item" @click="preview(item)">
           <div class="media-preview">
-            <el-image v-if="isImage(item.key)" :src="item.url" fit="cover" style="width:100%;height:100%" />
-            <div v-else class="video-icon"><el-icon :size="32"><VideoCamera /></el-icon></div>
+            <el-image v-if="item.type === 'image'" :src="item.url" fit="cover" style="width:100%;height:100%" />
+            <video
+              v-else-if="item.type === 'video'"
+              :src="`${item.url}#t=0.1`"
+              class="media-video-preview"
+              muted
+              playsinline
+              preload="metadata"
+            />
+            <div v-else class="video-icon">文件</div>
           </div>
           <div class="media-info">
             <div class="media-name" :title="item.name">{{ item.name }}</div>
@@ -34,7 +42,7 @@
           </div>
           <div class="media-actions">
             <el-button size="small" @click.stop="copyUrl(item.url)">复制链接</el-button>
-            <el-popconfirm title="确定删除？" @confirm="delFile(item.key)">
+            <el-popconfirm title="确定删除？" @confirm="delFile(item.name)">
               <template #reference><el-button size="small" type="danger" @click.stop>删除</el-button></template>
             </el-popconfirm>
           </div>
@@ -43,7 +51,7 @@
       </div>
     </el-card>
     
-    <el-dialog v-model="uploadDialog" title="上传文件" width="500px">
+    <el-dialog v-model="uploadDialog" title="上传文件" width="500px" :close-on-click-modal="!uploading">
       <el-form label-width="80px">
         <el-form-item label="目录">
           <el-select v-model="uploadFolder" style="width:100%">
@@ -60,15 +68,24 @@
           </el-upload>
         </el-form-item>
       </el-form>
+      <!-- 上传进度 -->
+      <div v-if="uploading" style="margin-top:12px">
+        <div v-if="fileList.length > 1" style="font-size:13px;color:#666;margin-bottom:6px">
+          总进度：{{ uploadDone }}/{{ fileList.length }}
+          <el-progress :percentage="uploadProgress" style="margin-top:4px" />
+        </div>
+        <div style="font-size:13px;color:#666;margin-top:6px">正在上传：{{ uploadingName }}</div>
+        <el-progress :percentage="fileUploadProgress" :format="(p) => p + '%'" style="margin-top:4px" />
+      </div>
       <template #footer>
-        <el-button @click="uploadDialog = false">取消</el-button>
+        <el-button @click="uploadDialog = false" :disabled="uploading">取消</el-button>
         <el-button type="primary" @click="handleUpload" :loading="uploading" :disabled="!fileList.length">上传</el-button>
       </template>
     </el-dialog>
     
     <el-dialog v-model="previewDialog.visible" :title="previewDialog.item?.name" width="700px">
       <div style="text-align:center">
-        <el-image v-if="previewDialog.item && isImage(previewDialog.item.key)" :src="previewDialog.item.url" fit="contain" style="max-height:400px" />
+        <el-image v-if="previewDialog.item && previewDialog.item.type === 'image'" :src="previewDialog.item.url" fit="contain" style="max-height:400px" />
         <video v-else-if="previewDialog.item" :src="previewDialog.item.url" controls style="max-width:100%;max-height:400px" />
       </div>
       <el-input :value="previewDialog.item?.url" readonly style="margin-top:16px">
@@ -79,13 +96,16 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
-import { Upload, Refresh, VideoCamera, UploadFilled } from '@element-plus/icons-vue'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { Upload, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { mediaApi } from '@/api'
 
 const loading = ref(false)
 const uploading = ref(false)
+const uploadDone = ref(0)
+const uploadingName = ref('')
+const fileUploadProgress = ref(0)  // 当前单文件进度 0-100
 const mediaList = ref([])
 const filter = reactive({ prefix: '' })
 const uploadDialog = ref(false)
@@ -93,7 +113,10 @@ const uploadFolder = ref('images')
 const fileList = ref([])
 const previewDialog = reactive({ visible: false, item: null })
 
-const isImage = (key) => /\.(jpg|jpeg|png|gif|webp)$/i.test(key)
+const uploadProgress = computed(() =>
+  fileList.value.length ? Math.round((uploadDone.value / fileList.value.length) * 100) : 0
+)
+
 const formatSize = (bytes) => {
   if (!bytes) return '-'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -106,21 +129,87 @@ async function loadList() {
   loading.value = true
   try {
     const res = await mediaApi.getList({ prefix: filter.prefix })
-    mediaList.value = res.files || res || []
+    mediaList.value = res.data?.files || []
   } catch { mediaList.value = [] }
   finally { loading.value = false }
 }
 
+// 直传单个文件到 OSS（前端直接 POST，不经过服务器）
+async function uploadOneToOSS(file) {
+  const rawFile = file.raw || file
+  const mimeType = rawFile.type || file.type || 'application/octet-stream'
+  const isVideo = mimeType.startsWith('video/')
+  const folder = isVideo ? 'videos' : uploadFolder.value
+
+  // 1. 从后端取签名
+  const signRes = await mediaApi.getUploadSign({
+    folder,
+    filename: file.name,
+    mimeType
+  })
+  const { host, objectName, accessKeyId, policy, signature, url } = signRes.data
+
+  // 2. 构造 FormData，直接 POST 到 OSS
+  const form = new FormData()
+  form.append('key', objectName)
+  form.append('OSSAccessKeyId', accessKeyId)
+  form.append('policy', policy)
+  form.append('Signature', signature)
+  form.append('Content-Type', mimeType)
+  form.append('success_action_status', '200')
+  form.append('file', rawFile)
+
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', host)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        fileUploadProgress.value = Math.round((e.loaded / e.total) * 100)
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status === 200 || xhr.status === 204) resolve(url)
+      else reject(new Error(`OSS 返回 ${xhr.status}: ${xhr.responseText}`))
+    }
+    xhr.onerror = () => reject(new Error('网络错误'))
+    xhr.send(form)
+  })
+
+  return url
+}
+
 async function handleUpload() {
   uploading.value = true
+  uploadDone.value = 0
+  fileUploadProgress.value = 0
+  let successCount = 0
+  let failCount = 0
+
   for (const f of fileList.value) {
-    const formData = new FormData()
-    formData.append('file', f.raw)
-    formData.append('folder', uploadFolder.value)
-    try { await mediaApi.upload(formData) } catch {}
+    uploadingName.value = f.name
+    fileUploadProgress.value = 0
+    try {
+      await uploadOneToOSS(f)
+      successCount++
+    } catch (e) {
+      failCount++
+      console.error('上传失败:', f.name, e)
+    }
+    uploadDone.value++
   }
-  ElMessage.success('上传完成')
+
   uploading.value = false
+  uploadingName.value = ''
+  fileUploadProgress.value = 0
+
+  if (failCount === 0) {
+    ElMessage.success(`${successCount} 个文件上传成功`)
+  } else if (successCount === 0) {
+    ElMessage.error('上传失败，请检查网络或重试')
+  } else {
+    ElMessage.warning(`${successCount} 个成功，${failCount} 个失败`)
+  }
+
   uploadDialog.value = false
   fileList.value = []
   loadList()
@@ -164,7 +253,14 @@ onMounted(loadList)
   align-items: center;
   justify-content: center;
 }
-.video-icon { color: #909399; }
+.media-video-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+  pointer-events: none;
+}
+.video-icon { color: #909399; font-size: 13px; }
 .media-info { padding: 8px 12px; }
 .media-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .media-meta { font-size: 12px; color: #999; margin-top: 4px; }

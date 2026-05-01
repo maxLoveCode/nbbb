@@ -18,8 +18,14 @@ function formatProduct(product) {
     mainImage: product.main_image,
     images: product.images || [],
     price: product.price, // 单位：分
-    originalPrice: product.cost_price,
-    discount: calculateDiscount(product.price, product.cost_price),
+    originalPrice: product.original_price ?? product.cost_price ?? null,
+    publicPrice: product.public_price ?? product.price,
+    publicOriginalPrice: product.public_original_price ?? product.original_price ?? null,
+    priceNote: product.price_note ?? null,
+    priceSource: product.price_source ?? "default",
+    pricingTier: product.pricing_tier ?? "default",
+    discountRate: product.discount_rate ?? null,
+    discount: calculateDiscount(product.price, product.original_price ?? product.cost_price),
     onsale: product.onsale,
     brand: product.brand,
     category: product.category,
@@ -126,6 +132,8 @@ function formatUser(user) {
     mobile: user.mobile,
     avatar: user.avatar_url,
     isActive: user.is_active,
+    pricingTier: user.pricing_tier || "default",
+    pricingDiscountRate: user.pricing_discount_rate ?? null,
     createdAt: user.created_at,
     updatedAt: user.updated_at
   };

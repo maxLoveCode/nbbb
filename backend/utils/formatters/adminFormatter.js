@@ -17,7 +17,16 @@ function formatProduct(product) {
     description: product.description,
     mainImage: product.main_image,
     images: product.images || [],
-    price: product.price, // 单位：分
+    price: product.price, // 单位：分（本地 sale_price 优先，否则聚水潭价）
+    originalPrice: product.original_price ?? null, // 划线价（分），null 则不展示
+    priceNote: product.price_note ?? null,          // 价格备注
+    jstPrice: product.jst_price ?? null,            // 聚水潭原始标价，供对比
+    publicPrice: product.public_price ?? product.price,
+    publicOriginalPrice: product.public_original_price ?? product.original_price ?? null,
+    priceSource: product.price_source ?? "default",
+    pricingTier: product.pricing_tier ?? "default",
+    discountRate: product.discount_rate ?? null,
+    hasPriceOverride: product.original_price != null || (product.jst_price != null && product.price !== product.jst_price),
     costPrice: product.cost_price,
     profit: product.price && product.cost_price ? product.price - product.cost_price : 0,
     profitMargin: calculateProfitMargin(product.price, product.cost_price),
@@ -163,6 +172,9 @@ function formatUser(user) {
     email: user.email,
     mobile: user.mobile,
     avatar: user.avatar_url,
+    pricingTier: user.pricing_tier || "default",
+    pricingDiscountRate: user.pricing_discount_rate ?? null,
+    isWhitelistPrice: (user.pricing_tier || "default") === "whitelist",
     isActive: user.is_active,
     status: user.is_active ? 'active' : 'inactive',
     createdAt: user.created_at,

@@ -21,23 +21,25 @@ export const dashboardApi = {
 export const productApi = {
   getList: (params) => request.get('/products', { params }),
   getDetail: (code) => request.get(`/products/${code}`),
-  updateDescription: (code, data) => request.put(`/products/${code}/description`, data)
+  updateDescription: (code, data) => request.put(`/products/${code}/description`, data),
+  updatePricing: (code, data) => request.put(`/products/${code}/pricing`, data)
 }
 
 // 目录页分类管理 (category_page_categories + category_page_products)
-// 使用 /api/category-page 路由（不是 /api/admin）
 export const categoryApi = {
   getCategories: () => apiRequest.get('/category-page/categories'),
   createCategory: (data) => apiRequest.post('/category-page/categories', data),
   updateCategory: (id, data) => apiRequest.put(`/category-page/categories/${id}`, data),
   deleteCategory: (id) => apiRequest.delete(`/category-page/categories/${id}`),
   getCategoryProducts: (id, params) => apiRequest.get(`/category-page/categories/${id}/products`, { params }),
-  addProductToCategory: (id, code) => apiRequest.post(`/category-page/categories/${id}/products`, { product_code: code }),
-  removeProductFromCategory: (id, code) => apiRequest.delete(`/category-page/categories/${id}/products/${code}`)
+  addProductToCategory: (id, codes) => apiRequest.post(`/category-page/categories/${id}/products`, {
+    product_codes: Array.isArray(codes) ? codes : [codes]
+  }),
+  removeProductFromCategory: (id, code) => apiRequest.delete(`/category-page/categories/${id}/products/${code}`),
+  reorderProducts: (id, productCodes) => apiRequest.put(`/category-page/categories/${id}/products/reorder`, { product_codes: productCodes })
 }
 
 // 即刻选购分类管理 (category_management)
-// 使用 /api/category-management 路由（不是 /api/admin）
 export const shoppingCategoryApi = {
   getTree: () => apiRequest.get('/category-management/tree'),
   getLevel1: () => apiRequest.get('/category-management/level1'),
@@ -59,7 +61,8 @@ export const userApi = {
   getList: (params) => request.get('/users', { params }),
   getDetail: (id) => request.get(`/users/${id}`),
   updateStatus: (id, isActive) => request.put(`/users/${id}/status`, { is_active: isActive }),
-  getUserOrders: (id, params) => request.get(`/users/${id}/orders`, { params })
+  getUserOrders: (id, params) => request.get(`/users/${id}/orders`, { params }),
+  updatePricing: (id, isWhitelist) => request.put(`/users/${id}/pricing`, { is_whitelist: isWhitelist })
 }
 
 export const homepageApi = {
@@ -78,10 +81,8 @@ export const homepageApi = {
 }
 
 export const mediaApi = {
-  upload: (formData, onProgress) => request.post('/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    onUploadProgress: onProgress
-  }),
+  // 获取直传签名（前端直接上传到 OSS，不经过服务器）
+  getUploadSign: (params) => request.get('/upload/sign', { params }),
   getList: (params) => request.get('/upload/list', { params }),
-  delete: (key) => request.delete('/upload', { data: { key } })
+  delete: (key) => request.delete('/upload/image', { data: { objectName: key } })
 }

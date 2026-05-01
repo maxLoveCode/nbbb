@@ -1,17 +1,13 @@
 const express = require("express");
 const router = express.Router();
-const { Pool } = require("pg");
 const jushuitanClient = require("../services/jushuitanClient");
+const optionalAuth = require("../middleware/optionalAuth");
+const pricingService = require("../services/pricingService");
+const productService = require("../services/productService");
 const { convertImageUrl, convertImageUrls } = require("../utils/imageUrlConverter");
 const { getColorHex, getColorHexMap } = require("../utils/colorMapper");
 
-const pool = new Pool({
-  host: "localhost",
-  port: 5432,
-  database: "ecommerce",
-  user: "admin",
-  password: "AxiaNBBB123"
-});
+router.use(optionalAuth);
 
 /**
  * 通过商品编码获取商品详情
@@ -255,22 +251,17 @@ router.get("/:productCode", async (req, res) => {
     const colorsArray = Array.from(colorSet).sort();
     const colorHexMap = getColorHexMap(colorsArray);
 
-    // 从本地 product_extras 表查询本地描述（如果存在）
-    let localDescription = "";
-    try {
-      const dbResult = await pool.query(
-        `SELECT local_description 
-         FROM product_extras 
-         WHERE product_code = $1`,
-        [productCode.trim()]
-      );
-      if (dbResult.rows.length > 0 && dbResult.rows[0].local_description) {
-        localDescription = dbResult.rows[0].local_description.trim();
-      }
-    } catch (dbError) {
-      // 如果查询失败，不影响主流程，只记录错误
-      console.warn("查询本地描述失败:", dbError.message);
-    }
+    const extrasMap = await productService.getProductExtrasMap(
+      [convertedItem.i_id || productCode.trim()],
+      { includeDescription: true }
+    );
+    const localExtras = extrasMap[convertedItem.i_id || productCode.trim()] || null;
+    const pricingProfile = await pricingService.getPricingProfile(req.user?.id || null);
+    const pricing = pricingService.applyPricing(
+      productService.getMergedPricing(convertedItem, localExtras),
+      pricingProfile
+    );
+    const localDescription = (localExtras?.local_description || "").trim();
 
     // 拼接描述：聚水潭描述 + 本地描述
     const jushuitanDesc = (convertedItem.description || "").trim();
@@ -300,12 +291,17 @@ router.get("/:productCode", async (req, res) => {
       category_name: convertedItem.category_name || "",
       category_id: convertedItem.c_id || null,
 
-      // 价格信息（聚水潭返回的价格单位可能是元，统一转换为分）
-      price: convertedItem.s_price ? Math.round(convertedItem.s_price * 100) : 0,
-      original_price: convertedItem.market_price 
-        ? Math.round(convertedItem.market_price * 100) 
-        : (convertedItem.c_price ? Math.round(convertedItem.c_price * 100) : null),
+      // 价格信息：统一走 productService 的本地改价逻辑
+      price: pricing.price ?? 0,
+      original_price: pricing.original_price,
       cost_price: convertedItem.c_price ? Math.round(convertedItem.c_price * 100) : null,
+      price_note: pricing.price_note,
+      jst_price: pricing.jst_price,
+      public_price: pricing.public_price,
+      public_original_price: pricing.public_original_price,
+      price_source: pricing.price_source,
+      pricing_tier: pricing.pricing_tier,
+      discount_rate: pricing.discount_rate,
 
       // 图片信息
       main_image: convertedItem.pic ? convertImageUrl(convertedItem.pic, { forceHttps: true }) : "",

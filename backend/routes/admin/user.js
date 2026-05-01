@@ -49,6 +49,35 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+router.put('/:id/pricing', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id, 10);
+    const { is_whitelist } = req.body || {};
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.status(400).json(adminFormatter.formatError("用户ID无效", 400));
+    }
+
+    const updatedUser = await userService.updateUserPricing(userId, {
+      pricingTier: is_whitelist ? 'whitelist' : 'default',
+      pricingDiscountRate: is_whitelist ? 0.3 : null
+    });
+
+    if (!updatedUser) {
+      return res.status(404).json(adminFormatter.formatError("用户不存在", 404));
+    }
+
+    return res.json(
+      adminFormatter.formatResponse(
+        adminFormatter.formatUser(updatedUser),
+        is_whitelist ? '白名单已开启' : '白名单已关闭'
+      )
+    );
+  } catch (error) {
+    return res.status(500).json(adminFormatter.formatError("更新价格白名单失败: " + error.message, 500));
+  }
+});
+
 module.exports = router;
 
 

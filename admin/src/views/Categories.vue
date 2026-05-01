@@ -61,19 +61,37 @@
                            @click="catalog.addProductDialog = true">添加商品</el-button>
               </div>
             </template>
-            <el-table v-if="catalog.selected" :data="catalog.products" v-loading="catalog.prodLoading" stripe>
-              <el-table-column prop="product_code" label="商品编码" width="150" />
-              <el-table-column prop="name" label="名称" />
-              <el-table-column label="操作" width="80">
-                <template #default="{ row }">
-                  <el-popconfirm title="确定移除？" @confirm="removeCatalogProd(row.product_code)">
-                    <template #reference>
-                      <el-button text type="danger" size="small">移除</el-button>
-                    </template>
-                  </el-popconfirm>
-                </template>
-              </el-table-column>
-            </el-table>
+            <div v-if="catalog.selected" v-loading="catalog.prodLoading" ref="catalogTableWrap">
+              <el-table :data="catalog.products" stripe size="small" max-height="500" row-key="product_code">
+                <el-table-column width="36">
+                  <template #header><span style="color:#aaa">⠿</span></template>
+                  <template #default><span class="drag-handle" style="cursor:grab;color:#bbb;font-size:16px;user-select:none">⠿</span></template>
+                </el-table-column>
+                <el-table-column label="#" width="45" align="center">
+                  <template #default="{ $index }">{{ $index + 1 }}</template>
+                </el-table-column>
+                <el-table-column prop="product_code" label="商品编码" width="150" />
+                <el-table-column prop="name" label="名称" />
+                <el-table-column label="排序" width="160" align="center">
+                  <template #default="{ $index }">
+                    <el-button-group size="small">
+                      <el-button text :disabled="$index === 0" @click="moveCatalogProdTop($index)">置顶</el-button>
+                      <el-button text :disabled="$index === 0" @click="moveCatalogProd($index, -1)">↑</el-button>
+                      <el-button text :disabled="$index === catalog.products.length - 1" @click="moveCatalogProd($index, 1)">↓</el-button>
+                    </el-button-group>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="80" align="center">
+                  <template #default="{ row }">
+                    <el-popconfirm title="确定移除？" @confirm="removeCatalogProd(row.product_code)">
+                      <template #reference>
+                        <el-button text type="danger" size="small">移除</el-button>
+                      </template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
             <el-empty v-else description="请选择分类" />
           </el-card>
         </el-col>
@@ -150,18 +168,44 @@
           <el-card shadow="hover">
             <template #header>
               <div style="display:flex;justify-content:space-between;align-items:center">
-                <span>{{ shopping.selectedLevel2?.name || '商品编码' }}</span>
+                <span>{{ shopping.selectedLevel2?.name || '商品列表' }} 
+                  <el-tag v-if="shopping.selectedLevel2" size="small" type="info">
+                    {{ shopping.selectedLevel2.product_codes?.length || 0 }} 个
+                  </el-tag>
+                </span>
                 <el-button v-if="shopping.selectedLevel2" type="primary" size="small" :icon="Plus" 
                            @click="shopping.addProductDialog = true">添加商品</el-button>
               </div>
             </template>
-            <div v-if="shopping.selectedLevel2" class="product-tags">
-              <el-tag v-for="(code, idx) in shopping.selectedLevel2.product_codes" :key="idx"
-                      closable @close="removeShoppingProd(idx)" 
-                      type="info"
-                      class="product-tag">
-                {{ code }}
-              </el-tag>
+            <div v-if="shopping.selectedLevel2" ref="shoppingTableWrap">
+              <el-table :data="shoppingProductsList" stripe size="small" max-height="400">
+                <el-table-column width="36">
+                  <template #header><span style="color:#aaa">⠿</span></template>
+                  <template #default><span class="drag-handle" style="cursor:grab;color:#bbb;font-size:16px;user-select:none">⠿</span></template>
+                </el-table-column>
+                <el-table-column label="#" width="45" align="center">
+                  <template #default="{ $index }">{{ $index + 1 }}</template>
+                </el-table-column>
+                <el-table-column prop="code" label="商品编码" min-width="140" />
+                <el-table-column label="排序" width="160" align="center">
+                  <template #default="{ $index }">
+                    <el-button-group size="small">
+                      <el-button text :disabled="$index === 0" @click="moveShoppingProdTop($index)">置顶</el-button>
+                      <el-button text :disabled="$index === 0" @click="moveShoppingProd($index, -1)">↑</el-button>
+                      <el-button text :disabled="$index === shoppingProductsList.length - 1" @click="moveShoppingProd($index, 1)">↓</el-button>
+                    </el-button-group>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="80" align="center">
+                  <template #default="{ $index }">
+                    <el-popconfirm title="确定移除？" @confirm="removeShoppingProd($index)">
+                      <template #reference>
+                        <el-button text type="danger" size="small">移除</el-button>
+                      </template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
               <el-empty v-if="!shopping.selectedLevel2.product_codes?.length" description="暂无商品" />
             </div>
             <el-empty v-else description="请选择二级分类" />
@@ -234,12 +278,64 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { Plus, Edit, Delete } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { categoryApi, shoppingCategoryApi } from '@/api'
+import Sortable from 'sortablejs'
 
 const activeTab = ref('catalog')
+const catalogTableWrap = ref(null)
+const shoppingTableWrap = ref(null)
+let catalogSortable = null
+let shoppingSortable = null
+
+/**
+ * 通用拖拽初始化
+ * @param {Ref} wrapRef  - 表格外层容器的 ref
+ * @param {Sortable|null} instance - 当前 Sortable 实例（用于销毁旧的）
+ * @param {Function} onDrop - 拖拽结束回调 ({ oldIndex, newIndex })
+ * @returns {Sortable} 新实例
+ */
+function initSortable(wrapRef, instance, onDrop) {
+  if (instance) instance.destroy()
+  const tbody = wrapRef.value?.querySelector('.el-table__body tbody')
+  if (!tbody) return null
+  return Sortable.create(tbody, {
+    handle: '.drag-handle',
+    animation: 150,
+    ghostClass: 'sortable-ghost',
+    onEnd: ({ oldIndex, newIndex }) => {
+      if (oldIndex !== newIndex) onDrop({ oldIndex, newIndex })
+    }
+  })
+}
+
+function parseUniqueCodes(input, separatorRegex) {
+  return [...new Set(
+    String(input || '')
+      .split(separatorRegex)
+      .map(s => s.trim())
+      .filter(Boolean)
+  )]
+}
+
+function formatListedSyncMessage(summary) {
+  if (!summary) return ''
+
+  const parts = []
+  if (summary.inserted) parts.push(`新入商品池 ${summary.inserted} 个`)
+  if (summary.reactivated) parts.push(`重新上架 ${summary.reactivated} 个`)
+  if (summary.already_active) parts.push(`已在商品池 ${summary.already_active} 个`)
+
+  return parts.length ? `，已同步到商品列表（${parts.join('，')}）` : ''
+}
+
+// 商品列表（将编码数组转为对象数组便于表格展示）
+const shoppingProductsList = computed(() => {
+  if (!shopping.selectedLevel2?.product_codes) return []
+  return shopping.selectedLevel2.product_codes.map(code => ({ code }))
+})
 
 // ==================== 目录页数据 ====================
 const catalog = reactive({
@@ -314,6 +410,50 @@ async function loadCatalogProducts(id) {
   } finally {
     catalog.prodLoading = false
   }
+  await nextTick()
+  catalogSortable = initSortable(catalogTableWrap, catalogSortable, async ({ oldIndex, newIndex }) => {
+    const moved = catalog.products.splice(oldIndex, 1)[0]
+    catalog.products.splice(newIndex, 0, moved)
+    try {
+      await categoryApi.reorderProducts(catalog.selected.id, catalog.products.map(p => p.product_code))
+      ElMessage.success('排序已保存')
+    } catch {
+      ElMessage.error('排序保存失败')
+      loadCatalogProducts(catalog.selected.id)
+    }
+  })
+}
+
+async function moveCatalogProd(idx, direction) {
+  const newIdx = idx + direction
+  const arr = catalog.products
+  const temp = arr[idx]
+  arr[idx] = arr[newIdx]
+  arr[newIdx] = temp
+  try {
+    await categoryApi.reorderProducts(
+      catalog.selected.id,
+      catalog.products.map(p => p.product_code)
+    )
+  } catch {
+    ElMessage.error('排序保存失败')
+    loadCatalogProducts(catalog.selected.id)
+  }
+}
+
+async function moveCatalogProdTop(idx) {
+  if (idx <= 0) return
+  const moved = catalog.products.splice(idx, 1)[0]
+  catalog.products.unshift(moved)
+  try {
+    await categoryApi.reorderProducts(
+      catalog.selected.id,
+      catalog.products.map(p => p.product_code)
+    )
+  } catch {
+    ElMessage.error('排序保存失败')
+    loadCatalogProducts(catalog.selected.id)
+  }
 }
 
 function selectCatalog(cat) { 
@@ -366,17 +506,30 @@ async function delCatalog(id) {
 }
 
 async function addCatalogProd() {
-  const codes = catalog.newProductCode.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-  for (const code of codes) {
-    try { 
-      await categoryApi.addProductToCategory(catalog.selected.id, code) 
-    } catch {}
+  const codes = parseUniqueCodes(catalog.newProductCode, /[,，]/)
+  if (!codes.length) {
+    ElMessage.warning('请先输入商品编码')
+    return
   }
-  ElMessage.success('添加完成')
-  catalog.addProductDialog = false
-  catalog.newProductCode = ''
-  loadCatalogProducts(catalog.selected.id)
-  loadCatalogCategories()
+
+  try {
+    const res = await categoryApi.addProductToCategory(catalog.selected.id, codes)
+    const addedCount = res.data?.length || 0
+    const suffix = formatListedSyncMessage(res.listed_sync)
+
+    if (addedCount > 0) {
+      ElMessage.success(`已添加 ${addedCount} 个商品${suffix}`)
+    } else {
+      ElMessage.warning(`未新增商品，可能已存在于当前分类${suffix}`)
+    }
+
+    catalog.addProductDialog = false
+    catalog.newProductCode = ''
+    loadCatalogProducts(catalog.selected.id)
+    loadCatalogCategories()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '添加失败')
+  }
 }
 
 async function removeCatalogProd(code) {
@@ -421,8 +574,21 @@ function selectLevel1(cat) {
   loadShoppingLevel2(cat.id)
 }
 
-function selectLevel2(cat) {
+async function selectLevel2(cat) {
   shopping.selectedLevel2 = cat
+  await nextTick()
+  shoppingSortable = initSortable(shoppingTableWrap, shoppingSortable, async ({ oldIndex, newIndex }) => {
+    const codes = [...shopping.selectedLevel2.product_codes]
+    const moved = codes.splice(oldIndex, 1)[0]
+    codes.splice(newIndex, 0, moved)
+    try {
+      await shoppingCategoryApi.updateProductCodes(shopping.selectedLevel2.id, codes)
+      shopping.selectedLevel2.product_codes = codes
+      ElMessage.success('排序已保存')
+    } catch {
+      ElMessage.error('排序保存失败')
+    }
+  })
 }
 
 function showAddLevel1() {
@@ -512,20 +678,30 @@ async function delCategory(id) {
 }
 
 async function addShoppingProd() {
-  const codes = shopping.newProductCode.split(/[,，;；]/).map(s => s.trim()).filter(Boolean)
+  const codes = parseUniqueCodes(shopping.newProductCode, /[,，;；]/)
+  if (!codes.length) {
+    ElMessage.warning('请先输入商品编码')
+    return
+  }
+
   const existingCodes = shopping.selectedLevel2.product_codes || []
-  const newCodes = [...existingCodes, ...codes]
+  const newCodes = [...new Set([...existingCodes, ...codes])]
+
+  if (newCodes.length === existingCodes.length) {
+    ElMessage.warning('输入的商品编码都已存在')
+    return
+  }
   
   try {
-    await shoppingCategoryApi.updateProductCodes(shopping.selectedLevel2.id, newCodes)
-    ElMessage.success('添加成功')
+    const res = await shoppingCategoryApi.updateProductCodes(shopping.selectedLevel2.id, newCodes)
+    ElMessage.success(`添加成功${formatListedSyncMessage(res.listed_sync)}`)
     shopping.addProductDialog = false
     shopping.newProductCode = ''
     // 更新本地数据
     shopping.selectedLevel2.product_codes = newCodes
     loadShoppingLevel2(shopping.selectedLevel1.id)
-  } catch {
-    ElMessage.error('添加失败')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '添加失败')
   }
 }
 
@@ -542,12 +718,57 @@ async function removeShoppingProd(idx) {
   }
 }
 
+// 移动商品位置（排序）
+async function moveShoppingProd(idx, direction) {
+  const codes = [...shopping.selectedLevel2.product_codes]
+  const newIdx = idx + direction
+  
+  // 交换位置
+  const temp = codes[idx]
+  codes[idx] = codes[newIdx]
+  codes[newIdx] = temp
+  
+  try {
+    await shoppingCategoryApi.updateProductCodes(shopping.selectedLevel2.id, codes)
+    shopping.selectedLevel2.product_codes = codes
+  } catch {
+    ElMessage.error('移动失败')
+  }
+}
+
+async function moveShoppingProdTop(idx) {
+  if (idx <= 0) return
+  const codes = [...shopping.selectedLevel2.product_codes]
+  const moved = codes.splice(idx, 1)[0]
+  codes.unshift(moved)
+
+  try {
+    await shoppingCategoryApi.updateProductCodes(shopping.selectedLevel2.id, codes)
+    shopping.selectedLevel2.product_codes = codes
+  } catch {
+    ElMessage.error('移动失败')
+  }
+}
+
 onMounted(() => {
   loadCatalogCategories()
 })
 </script>
 
 <style scoped>
+.drag-handle {
+  cursor: grab !important;
+}
+
+.drag-handle:active {
+  cursor: grabbing !important;
+}
+
+:deep(.sortable-ghost) {
+  opacity: 0.5;
+  background: var(--bg-elevated) !important;
+}
+
 .page-header {
   margin-bottom: 20px;
 }

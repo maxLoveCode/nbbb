@@ -1,5 +1,6 @@
 const { Pool } = require("pg");
 const jushuitanClient = require("./jushuitanClient");
+const pricingService = require("./pricingService");
 const { convertImageUrls, convertImageUrl } = require("../utils/imageUrlConverter");
 
 const pool = new Pool({
@@ -15,41 +16,97 @@ const pool = new Pool({
  * 提供商品相关的业务逻辑，供不同端的控制器复用
  */
 class ProductService {
+  normalizeJstProduct(product) {
+    if (!product) return null;
+    if (product.i_id) return product;
+    if (product.skus && product.skus.length > 0) {
+      const firstSku = product.skus[0];
+      return {
+        ...product,
+        i_id: firstSku.i_id || product.i_id,
+        name: firstSku.name || product.name,
+        brand: firstSku.brand || product.brand,
+        pic: firstSku.pic || product.pic
+      };
+    }
+    return product;
+  }
+
+  async getProductExtrasMap(productCodes = [], { includeDescription = false } = {}) {
+    const codes = [...new Set((productCodes || []).filter(Boolean))];
+    if (codes.length === 0) return {};
+
+    const fields = ["product_code", "sale_price", "original_price", "price_note"];
+    if (includeDescription) fields.push("local_description");
+
+    try {
+      const extrasResult = await pool.query(
+        `SELECT ${fields.join(", ")}
+         FROM product_extras
+         WHERE product_code = ANY($1)`,
+        [codes]
+      );
+
+      return extrasResult.rows.reduce((acc, row) => {
+        acc[row.product_code] = row;
+        return acc;
+      }, {});
+    } catch (err) {
+      console.log("查询本地扩展信息失败:", err.message);
+      return {};
+    }
+  }
+
+  getMergedPricing(rawProduct, extras = null) {
+    const product = this.normalizeJstProduct(rawProduct);
+    const jstPrice = typeof product?.s_price === "number"
+      ? Math.round(product.s_price * 100)
+      : null;
+
+    return {
+      price: extras?.sale_price ?? jstPrice,
+      original_price: extras?.original_price ?? null,
+      price_note: extras?.price_note ?? null,
+      jst_price: jstPrice
+    };
+  }
+
   /**
    * 根据商品编码获取商品详情
    * @param {string} productCode - 商品编码
    * @returns {Object} 商品详情
    */
-  async getProductByCode(productCode) {
+  async getProductByCode(productCode, options = {}) {
     try {
+      const pricingProfile = options.pricingProfile || await pricingService.getPricingProfile(options.userId);
+
       // 从聚水潭获取商品信息
-      const jstProduct = await jushuitanClient.getProductByCode(productCode);
+      const jstProduct = this.normalizeJstProduct(
+        await jushuitanClient.getProductByCode(productCode)
+      );
       
       if (!jstProduct) {
         return null;
       }
 
-      // 获取本地扩展描述（如果存在）
-      let localDescription = null;
-      try {
-        const extrasResult = await pool.query(
-          "SELECT local_description FROM product_extras WHERE product_code = $1",
-          [productCode]
-        );
-        if (extrasResult.rows.length > 0 && extrasResult.rows[0].local_description) {
-          localDescription = extrasResult.rows[0].local_description;
-        }
-      } catch (err) {
-        console.log("查询本地描述失败:", err.message);
-      }
+      // 获取本地扩展信息（描述 + 定价）
+      const extrasMap = await this.getProductExtrasMap([productCode], { includeDescription: true });
+      const localExtras = extrasMap[productCode] || null;
 
       // 合并描述
+      const localDescription = localExtras?.local_description || null;
       let finalDescription = jstProduct.description || "";
       if (localDescription) {
-        finalDescription = finalDescription 
-          ? `${finalDescription}\n\n${localDescription}` 
+        finalDescription = finalDescription
+          ? `${finalDescription}\n\n${localDescription}`
           : localDescription;
       }
+
+      // 价格：本地 sale_price 优先，否则用聚水潭 s_price
+      const pricing = pricingService.applyPricing(
+        this.getMergedPricing(jstProduct, localExtras),
+        pricingProfile
+      );
 
       // 格式化商品数据
       const formattedProduct = {
@@ -58,9 +115,15 @@ class ProductService {
         description: finalDescription,
         main_image: convertImageUrl(jstProduct.pic),
         images: jstProduct.images ? convertImageUrls(jstProduct.images) : [],
-        price: typeof jstProduct.s_price === "number" 
-          ? Math.round(jstProduct.s_price * 100) 
-          : null,
+        price: pricing.price,
+        original_price: pricing.original_price,  // 划线价（null 则前端不显示）
+        price_note: pricing.price_note,          // 价格备注
+        jst_price: pricing.jst_price,            // 聚水潭原始价，供后台展示对比
+        public_price: pricing.public_price,
+        public_original_price: pricing.public_original_price,
+        price_source: pricing.price_source,
+        pricing_tier: pricing.pricing_tier,
+        discount_rate: pricing.discount_rate,
         cost_price: typeof jstProduct.cost_price === "number"
           ? Math.round(jstProduct.cost_price * 100)
           : null,
@@ -92,8 +155,10 @@ class ProductService {
         page = 1,
         pageSize = 20,
         keyword = "",
-        category = ""
+        category = "",
+        userId = null
       } = options;
+      const pricingProfile = options.pricingProfile || await pricingService.getPricingProfile(userId);
 
       // 1. 从 listed_products 表获取上架商品编码列表
       let query = `
@@ -149,7 +214,7 @@ class ProductService {
       }
 
       // 4. 批量从聚水潭获取商品详情
-      const products = await this.batchGetProductsFromJST(pagedCodes, keyword);
+      const products = await this.batchGetProductsFromJST(pagedCodes, keyword, { pricingProfile });
 
       // 5. 合并 listed_products 的信息（分类、排序）
       const listedMap = {};
@@ -191,60 +256,76 @@ class ProductService {
    * @param {string} keyword - 关键词筛选（可选）
    * @returns {Array} 商品列表
    */
-  async batchGetProductsFromJST(productCodes, keyword = "") {
-    try {
-      // 调用聚水潭接口批量查询
-      const biz = {
-        i_ids: productCodes,
-        page_index: 1,
-        page_size: productCodes.length
-      };
+  async batchGetProductsFromJST(productCodes, keyword = "", options = {}) {
+    // 聚水潭限制：i_ids 每次最多 20 个，需要分批请求
+    const BATCH_SIZE = 20;
+    const pricingProfile = options.pricingProfile || await pricingService.getPricingProfile(options.userId);
 
-      const result = await jushuitanClient.call(
-        "jushuitan.item.query",
-        biz,
-        {},
-        "https://openapi.jushuitan.com/open/mall/item/query"
-      );
-
-      // 检查响应
+    const parseItems = (result) => {
       if (result.code !== 0) {
         console.error("聚水潭API调用失败:", result.msg);
-        return [];
+        return null;
+      }
+      return result.data?.datas
+        || result.data?.data?.datas
+        || result.data?.items
+        || result.items
+        || result.datas
+        || null;
+    };
+
+    try {
+      const allItems = [];
+
+      for (let i = 0; i < productCodes.length; i += BATCH_SIZE) {
+        const batch = productCodes.slice(i, i + BATCH_SIZE);
+        const result = await jushuitanClient.call(
+          "jushuitan.item.query",
+          { i_ids: batch, page_index: 1, page_size: batch.length },
+          {},
+          "https://openapi.jushuitan.com/open/mall/item/query"
+        );
+        const items = parseItems(result);
+        if (items && items.length > 0) {
+          allItems.push(...items.map(item => this.normalizeJstProduct(item)));
+        }
       }
 
-      // 解析响应数据
-      let items = null;
-      if (result.data && result.data.datas) {
-        items = result.data.datas;
-      } else if (result.data && result.data.data && result.data.data.datas) {
-        items = result.data.data.datas;
-      } else if (result.data && result.data.items) {
-        items = result.data.items;
-      } else if (result.items) {
-        items = result.items;
-      } else if (result.datas) {
-        items = result.datas;
-      }
-
-      if (!items || items.length === 0) {
+      if (allItems.length === 0) {
         console.log("聚水潭返回空数据");
         return [];
       }
 
-      // 格式化商品列表
-      let products = items.map(product => ({
-        code: product.i_id,
-        name: product.name,
-        main_image: convertImageUrl(product.pic),
-        price: typeof product.s_price === "number" 
-          ? Math.round(product.s_price * 100) 
-          : null,
-        onsale: product.onsale === 1 || product.is_listing === 'Y',
-        brand: product.brand,
-        category: product.c_name || product.category_name,
-        stock: product.qty || 0
-      }));
+      // 批量查 product_extras 本地定价（一次查完，不逐个查）
+      const codes = allItems.map(p => p.i_id).filter(Boolean);
+      const extrasMap = await this.getProductExtrasMap(codes);
+
+      // 格式化商品列表，本地 sale_price 优先
+      let products = allItems.map(product => {
+        const extras = extrasMap[product.i_id];
+        const pricing = pricingService.applyPricing(
+          this.getMergedPricing(product, extras),
+          pricingProfile
+        );
+        return {
+          code: product.i_id,
+          name: product.name,
+          main_image: convertImageUrl(product.pic),
+          price: pricing.price,
+          original_price: pricing.original_price,
+          price_note: pricing.price_note,
+          jst_price: pricing.jst_price,
+          public_price: pricing.public_price,
+          public_original_price: pricing.public_original_price,
+          price_source: pricing.price_source,
+          pricing_tier: pricing.pricing_tier,
+          discount_rate: pricing.discount_rate,
+          onsale: product.onsale === 1 || product.is_listing === 'Y',
+          brand: product.brand,
+          category: product.c_name || product.category_name,
+          stock: product.qty || 0
+        };
+      });
 
       // 如果有关键词，进行本地过滤
       if (keyword) {
@@ -334,8 +415,6 @@ class ProductService {
 
   /**
    * 更新商品本地描述
-   * @param {string} productCode - 商品编码
-   * @param {string} description - 本地描述
    */
   async updateLocalDescription(productCode, description) {
     try {
@@ -347,10 +426,38 @@ class ProductService {
          RETURNING *`,
         [productCode, description]
       );
-
       return result.rows[0];
     } catch (error) {
       console.error("更新本地描述失败:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * 更新商品本地定价
+   * @param {string} productCode
+   * @param {Object} pricing - { sale_price, original_price, price_note }
+   *   sale_price: 分，null 表示恢复使用聚水潭价
+   *   original_price: 分，null 表示不显示划线价
+   *   price_note: 字符串备注，null 表示清除
+   */
+  async updatePricing(productCode, { sale_price, original_price, price_note }) {
+    try {
+      const result = await pool.query(
+        `INSERT INTO product_extras (product_code, sale_price, original_price, price_note, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (product_code)
+         DO UPDATE SET
+           sale_price     = $2,
+           original_price = $3,
+           price_note     = $4,
+           updated_at     = NOW()
+         RETURNING *`,
+        [productCode, sale_price ?? null, original_price ?? null, price_note ?? null]
+      );
+      return result.rows[0];
+    } catch (error) {
+      console.error("更新本地定价失败:", error);
       throw error;
     }
   }

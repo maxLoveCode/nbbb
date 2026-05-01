@@ -1,7 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { Pool } = require('pg');
+const optionalAuth = require('../middleware/optionalAuth');
 const productService = require('../services/productService');
+const listedProductSyncService = require('../services/listedProductSyncService');
 
 const pool = new Pool({
   host: 'localhost',
@@ -10,6 +12,25 @@ const pool = new Pool({
   user: 'admin',
   password: 'AxiaNBBB123'
 });
+
+router.use(optionalAuth);
+
+async function syncCategoryProductsToListedProducts(categoryId, productCodes, client) {
+  if (!Array.isArray(productCodes) || productCodes.length === 0) return;
+
+  const categoryResult = await client.query(
+    'SELECT name FROM category_page_categories WHERE id = $1',
+    [categoryId]
+  );
+
+  const categoryName = categoryResult.rows[0]?.name || null;
+  return listedProductSyncService.ensureListedProducts(productCodes, {
+    category: categoryName,
+    notes: categoryName
+      ? `auto-synced from category page: ${categoryName}`
+      : 'auto-synced from category page'
+  }, client);
+}
 
 /**
  * 获取分类页完整数据
@@ -69,14 +90,19 @@ router.get('/', async (req, res) => {
 
         if (productCodes.length > 0) {
           try {
-            // 批量获取商品（最多10个用于首页展示）
-            const products = await productService.batchGetProductsFromJST(productCodes.slice(0, 10));
+            const products = await productService.batchGetProductsFromJST(productCodes, "", {
+              userId: req.user?.id || null
+            });
             
+            // 按 sort_order 重新排序（聚水潭返回顺序不稳定）
+            const orderMap = new Map(productCodes.map((code, idx) => [code, idx]));
+            products.sort((a, b) => (orderMap.get(a.code) ?? 999) - (orderMap.get(b.code) ?? 999));
+
             categoryData.content.products = products.map(p => ({
               id: p.code,
               title: p.name,
               price: p.price,
-              original_price: p.cost_price,
+              original_price: p.original_price ?? p.cost_price,
               image: p.main_image,
               currency: '¥'
             }));
@@ -98,14 +124,15 @@ router.get('/', async (req, res) => {
             const productResult = await productService.getProductList({
               page: 1,
               pageSize: 10,
-              category: category.name
+              category: category.name,
+              userId: req.user?.id || null
             });
 
             categoryData.content.products = (productResult.products || []).map(p => ({
               id: p.code,
               title: p.name,
               price: p.price,
-              original_price: p.cost_price,
+              original_price: p.original_price ?? p.cost_price,
               image: p.main_image,
               currency: '¥'
             }));
@@ -154,7 +181,7 @@ router.get('/', async (req, res) => {
 router.get('/:id/products', async (req, res) => {
   try {
     const { id } = req.params;
-    const { pageNum = 1, pageSize = 10 } = req.query;
+    const { pageNum = 1, pageSize = 100 } = req.query;
 
     // 1. 获取分类信息
     const categoryResult = await pool.query(
@@ -201,12 +228,17 @@ router.get('/:id/products', async (req, res) => {
     
     if (pagedCodes.length > 0) {
       // 从聚水潭获取商品详情
-      const rawProducts = await productService.batchGetProductsFromJST(pagedCodes);
+      const rawProducts = await productService.batchGetProductsFromJST(pagedCodes, "", {
+        userId: req.user?.id || null
+      });
+      // 按 sort_order 重新排序（聚水潭返回顺序不稳定）
+      const orderMap = new Map(pagedCodes.map((code, idx) => [code, idx]));
+      rawProducts.sort((a, b) => (orderMap.get(a.code) ?? 999) - (orderMap.get(b.code) ?? 999));
       products = rawProducts.map(p => ({
         id: p.code,
         title: p.name,
         price: p.price,
-        original_price: p.cost_price,
+        original_price: p.original_price ?? p.cost_price,
         image: p.main_image,
         currency: '¥'
       }));
@@ -215,13 +247,14 @@ router.get('/:id/products', async (req, res) => {
       const productResult = await productService.getProductList({
         page,
         pageSize: size,
-        category: category.name
+        category: category.name,
+        userId: req.user?.id || null
       });
       products = (productResult.products || []).map(p => ({
         id: p.code,
         title: p.name,
         price: p.price,
-        original_price: p.cost_price,
+        original_price: p.original_price ?? p.cost_price,
         image: p.main_image,
         currency: '¥'
       }));
@@ -324,6 +357,8 @@ router.get('/:id/product-codes', async (req, res) => {
  * POST /api/category-page/:id/products
  */
 router.post('/:id/products', async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
   try {
     const { id } = req.params;
     const { product_codes } = req.body;
@@ -335,8 +370,11 @@ router.post('/:id/products', async (req, res) => {
       });
     }
 
+    await client.query('BEGIN');
+    transactionStarted = true;
+
     // 获取当前最大排序值
-    const maxOrderResult = await pool.query(
+    const maxOrderResult = await client.query(
       'SELECT COALESCE(MAX(sort_order), -1) as max_order FROM category_page_products WHERE category_id = $1',
       [id]
     );
@@ -346,7 +384,7 @@ router.post('/:id/products', async (req, res) => {
     const inserted = [];
     for (const code of product_codes) {
       try {
-        const result = await pool.query(`
+        const result = await client.query(`
           INSERT INTO category_page_products (category_id, product_code, sort_order)
           VALUES ($1, $2, $3)
           ON CONFLICT (category_id, product_code) DO NOTHING
@@ -361,17 +399,32 @@ router.post('/:id/products', async (req, res) => {
       }
     }
 
+    const listedSync = await syncCategoryProductsToListedProducts(
+      id,
+      inserted.map(item => item.product_code),
+      client
+    );
+
+    await client.query('COMMIT');
+    transactionStarted = false;
+
     res.json({
       success: true,
       message: `成功添加 ${inserted.length} 个商品`,
-      data: inserted
+      data: inserted,
+      listed_sync: listedSync?.summary || null
     });
   } catch (error) {
+    if (transactionStarted) {
+      await client.query('ROLLBACK');
+    }
     console.error('添加商品失败:', error);
     res.status(500).json({
       success: false,
       message: '添加商品失败: ' + error.message
     });
+  } finally {
+    client.release();
   }
 });
 
@@ -460,7 +513,7 @@ router.post('/categories', async (req, res) => {
 
     const result = await pool.query(`
       INSERT INTO category_page_categories (name, type, source, sort_order, is_active, description, image)
-      VALUES ($1, $2, 'custom', $3, $4, $5, $6)
+      VALUES ($1, $2, 'category', $3, $4, $5, $6)
       RETURNING *
     `, [name, type, sort_order, is_active, description || null, image || null]);
 
@@ -646,6 +699,144 @@ router.get('/categories/:id/products', async (req, res) => {
     res.status(500).json({
       success: false,
       message: '获取分类商品失败: ' + error.message
+    });
+  }
+});
+
+/**
+ * 批量更新商品排序
+ * PUT /api/category-page/categories/:id/products/reorder
+ * body: { product_codes: ["code1", "code2", ...] }  // 按新顺序传入
+ */
+router.put('/categories/:id/products/reorder', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { product_codes } = req.body;
+
+    if (!Array.isArray(product_codes) || product_codes.length === 0) {
+      return res.status(400).json({ success: false, message: '请提供商品编码数组' });
+    }
+
+    for (let i = 0; i < product_codes.length; i++) {
+      await pool.query(
+        'UPDATE category_page_products SET sort_order = $1 WHERE category_id = $2 AND product_code = $3',
+        [i + 1, id, product_codes[i]]
+      );
+    }
+
+    res.json({ success: true, message: '排序已更新' });
+  } catch (error) {
+    console.error('更新商品排序失败:', error);
+    res.status(500).json({ success: false, message: '更新排序失败: ' + error.message });
+  }
+});
+
+
+router.post('/categories/:id/products', async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+  try {
+    const { id } = req.params;
+    const { product_code, product_codes } = req.body;
+
+    // 兼容单个编码和数组
+    const codes = product_codes
+      ? (Array.isArray(product_codes) ? product_codes : [product_codes])
+      : (product_code ? [product_code] : []);
+
+    if (codes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '请提供商品编码'
+      });
+    }
+
+    await client.query('BEGIN');
+    transactionStarted = true;
+
+    // 获取当前最大排序值
+    const maxOrderResult = await client.query(
+      'SELECT COALESCE(MAX(sort_order), -1) as max_order FROM category_page_products WHERE category_id = $1',
+      [id]
+    );
+    let sortOrder = maxOrderResult.rows[0].max_order + 1;
+
+    const inserted = [];
+    for (const code of codes) {
+      try {
+        const result = await client.query(`
+          INSERT INTO category_page_products (category_id, product_code, sort_order)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (category_id, product_code) DO NOTHING
+          RETURNING *
+        `, [id, code.trim(), sortOrder++]);
+
+        if (result.rows.length > 0) {
+          inserted.push(result.rows[0]);
+        }
+      } catch (err) {
+        console.error(`插入商品 ${code} 失败:`, err.message);
+      }
+    }
+
+    const listedSync = await syncCategoryProductsToListedProducts(
+      id,
+      inserted.map(item => item.product_code),
+      client
+    );
+
+    await client.query('COMMIT');
+    transactionStarted = false;
+
+    res.json({
+      success: true,
+      message: `成功添加 ${inserted.length} 个商品`,
+      data: inserted,
+      listed_sync: listedSync?.summary || null
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query('ROLLBACK');
+    }
+    console.error('添加商品失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '添加商品失败: ' + error.message
+    });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * 从分类移除商品（管理用，带 /categories 前缀）
+ * DELETE /api/category-page/categories/:id/products/:productCode
+ */
+router.delete('/categories/:id/products/:productCode', async (req, res) => {
+  try {
+    const { id, productCode } = req.params;
+
+    const result = await pool.query(
+      'DELETE FROM category_page_products WHERE category_id = $1 AND product_code = $2 RETURNING *',
+      [id, productCode]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '商品不存在'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: '移除成功'
+    });
+  } catch (error) {
+    console.error('移除商品失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '移除商品失败: ' + error.message
     });
   }
 });

@@ -1,4 +1,6 @@
 const jushuitanClient = require("../services/jushuitanClient");
+const productService = require("../services/productService");
+const pricingService = require("../services/pricingService");
 const logger = require("./logger");
 const { convertImageUrl } = require("./imageUrlConverter");
 
@@ -14,8 +16,9 @@ class CartValidator {
    * @param {Array<string>} productCodes - 商品编码数组
    * @returns {Promise<Map>} 商品编码 -> 商品信息 的Map
    */
-  async batchQueryProducts(productCodes) {
+  async batchQueryProducts(productCodes, options = {}) {
     const productMap = new Map();
+    const pricingProfile = options.pricingProfile || await pricingService.getPricingProfile(options.userId);
     
     if (!productCodes || productCodes.length === 0) {
       return productMap;
@@ -48,11 +51,27 @@ class CartValidator {
         items = response.datas;
       }
 
-      // 构建商品Map
-      if (items && items.length > 0) {
-        for (const product of items) {
+      const normalizedItems = (items || []).map(item => productService.normalizeJstProduct(item));
+      const extrasMap = await productService.getProductExtrasMap(
+        normalizedItems.map(product => product.i_id).filter(Boolean)
+      );
+
+      // 构建商品Map，并应用本地改价
+      if (normalizedItems.length > 0) {
+        for (const product of normalizedItems) {
           if (product.i_id) {
-            productMap.set(product.i_id, product);
+            const extras = extrasMap[product.i_id];
+            const priced = pricingService.applyPricing(
+              productService.getMergedPricing(product, extras),
+              pricingProfile
+            );
+            const merged = {
+              ...product,
+              s_price: priced.price != null ? priced.price / 100 : product.s_price,
+              market_price: priced.original_price != null ? priced.original_price / 100 : product.market_price,
+              price_note: priced.price_note
+            };
+            productMap.set(product.i_id, merged);
           }
         }
       }
@@ -170,9 +189,9 @@ class CartValidator {
    * @param {string} skuId - SKU编码（可选）
    * @returns {Promise<Object>} 商品有效性信息
    */
-  async checkProductValidity(productCode, skuId = null) {
+  async checkProductValidity(productCode, skuId = null, options = {}) {
     try {
-      const productMap = await this.batchQueryProducts([productCode]);
+      const productMap = await this.batchQueryProducts([productCode], options);
       const product = productMap.get(productCode);
       return this.validateCartItem(product, productCode, skuId);
     } catch (error) {
@@ -197,7 +216,7 @@ class CartValidator {
    * @param {Array} items - 购物车项数组
    * @returns {Promise<Array>} 包含有效性检查结果的数组
    */
-  async batchCheckValidity(items) {
+  async batchCheckValidity(items, options = {}) {
     if (!items || items.length === 0) {
       return [];
     }
@@ -212,7 +231,7 @@ class CartValidator {
     });
 
     // 2. 一次API请求批量查询所有商品
-    const productMap = await this.batchQueryProducts(uniqueProductCodes);
+    const productMap = await this.batchQueryProducts(uniqueProductCodes, options);
 
     // 3. 本地匹配：为每个购物车项验证有效性
     const checks = items.map(item => {
@@ -288,10 +307,11 @@ class CartValidator {
    * @param {Array} items - 购物车项数组（包含快照字段）
    * @returns {Promise<Array>} 包含有效性检查结果的数组
    */
-  async batchCheckWithSnapshot(items) {
+  async batchCheckWithSnapshot(items, options = {}) {
     if (!items || items.length === 0) {
       return [];
     }
+    const pricingProfile = options.pricingProfile || await pricingService.getPricingProfile(options.userId);
 
     // 1. 收集所有不同的 product_code（去重）
     const uniqueProductCodes = [...new Set(items.map(item => item.product_code))];
@@ -310,7 +330,7 @@ class CartValidator {
     const [inventoryMap, productMap] = await Promise.all([
       this.batchQueryInventory(uniqueProductCodes),
       productCodesMissingSnapshot.length > 0 
-        ? this.batchQueryProducts(productCodesMissingSnapshot)
+        ? this.batchQueryProducts(productCodesMissingSnapshot, { pricingProfile })
         : Promise.resolve(new Map())
     ]);
 
@@ -326,15 +346,21 @@ class CartValidator {
       
       // 如果有本地快照，使用快照数据
       if (item.product_name) {
+        const pricedSnapshot = pricingService.applyYuanPricing({
+          price: item.sale_price,
+          original_price: item.original_price
+        }, pricingProfile);
         product = {
           i_id: item.product_code,
           name: item.product_name,
           pic: item.product_pic,
-          s_price: item.original_price,
+          s_price: pricedSnapshot.price,
+          market_price: pricedSnapshot.original_price,
+          price_note: pricedSnapshot.price_note,
           sku: item.sku_id ? {
             sku_id: item.sku_id,
             properties_value: item.properties_value,
-            sale_price: item.sale_price,
+            sale_price: pricedSnapshot.price,
             enabled: 1,
             pic: item.sku_pic
           } : null

@@ -16,7 +16,10 @@ function getOSSClient() {
       region: process.env.OSS_REGION || 'oss-cn-hangzhou',
       accessKeyId: process.env.OSS_ACCESS_KEY_ID,
       accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
-      bucket: process.env.OSS_BUCKET || 'nbbb'
+      bucket: process.env.OSS_BUCKET || 'nbbb',
+      secure: true,          // 强制 HTTPS，HTTP 在分片上传大文件时连接不稳定
+      timeout: 120000,
+      requestTimeout: 120000
     });
   }
   return ossClient;
@@ -208,6 +211,7 @@ router.post('/video', upload.single('video'), async (req, res) => {
 });
 
 // 上传文件（通用，支持图片和视频）
+// 图片用普通 put；视频用分片上传（multipartUpload），避免大文件超时
 router.post('/file', (req, res, next) => {
   upload.single('file')(req, res, (err) => {
     if (err) {
@@ -240,27 +244,47 @@ router.post('/file', (req, res, next) => {
     }
 
     const folder = req.body.folder || 'media';
-    const fileType = req.file.mimetype.startsWith('video/') ? 'videos' : 'images';
+    const isVideo = req.file.mimetype.startsWith('video/');
+    const fileType = isVideo ? 'videos' : 'images';
     const uploadFolder = folder === 'media' ? fileType : folder;
     const fileName = generateFileName(req.file.originalname);
     const objectName = `${uploadFolder}/${fileName}`;
 
-    // 上传到OSS
-    const result = await getOSSClient().put(objectName, req.file.buffer, {
-      headers: {
-        'Content-Type': req.file.mimetype,
-        'Cache-Control': 'public, max-age=31536000'
-      }
-    });
+    const client = getOSSClient();
+    let resultUrl, resultName;
+
+    if (isVideo) {
+      // 视频使用分片上传：每片 2MB，5 路并发，彻底解决大文件超时
+      const multiResult = await client.multipartUpload(objectName, req.file.buffer, {
+        partSize: 2 * 1024 * 1024,   // 每片 2MB
+        parallel: 5,                  // 5 路并发
+        mime: req.file.mimetype,
+        headers: {
+          'Cache-Control': 'public, max-age=31536000'
+        }
+      });
+      resultName = multiResult.name;
+      resultUrl = `https://${client.options.bucket}.${client.options.region}.aliyuncs.com/${multiResult.name}`;
+    } else {
+      // 图片用普通 put（体积小，不需要分片）
+      const putResult = await client.put(objectName, req.file.buffer, {
+        headers: {
+          'Content-Type': req.file.mimetype,
+          'Cache-Control': 'public, max-age=31536000'
+        }
+      });
+      resultName = putResult.name;
+      resultUrl = putResult.url;
+    }
 
     res.json({
       success: true,
       data: {
-        url: result.url,
-        name: result.name,
+        url: resultUrl,
+        name: resultName,
         size: req.file.size,
         mimeType: req.file.mimetype,
-        type: req.file.mimetype.startsWith('video/') ? 'video' : 'image'
+        type: isVideo ? 'video' : 'image'
       },
       message: '上传成功'
     });
@@ -319,27 +343,63 @@ router.get('/list', async (req, res) => {
   }
 });
 
-// 获取OSS配置信息（供前端直传使用）
-router.get('/oss-config', (req, res) => {
+// OSS PostObject 直传签名
+// 前端拿到签名后直接 POST 到 OSS，不经过服务器带宽
+// GET /api/admin/upload/sign?folder=videos&filename=xxx.mp4&mimeType=video/mp4
+router.get('/sign', (req, res) => {
   try {
-    // 生成临时访问凭证
-    const config = {
-      region: getOSSClient().options.region,
-      bucket: getOSSClient().options.bucket,
-      // 注意：不要直接返回 accessKeyId 和 accessKeySecret
-      // 这里只是示例，生产环境应该使用 STS 临时凭证
+    const crypto = require('crypto');
+    const { folder = 'images', filename, mimeType = 'application/octet-stream' } = req.query;
+
+    if (!filename) {
+      return res.status(400).json({ success: false, error: { message: '缺少 filename 参数' } });
+    }
+
+    const accessKeyId = process.env.OSS_ACCESS_KEY_ID;
+    const accessKeySecret = process.env.OSS_ACCESS_KEY_SECRET;
+    const bucket = process.env.OSS_BUCKET || 'nbbb';
+    const region = process.env.OSS_REGION || 'oss-cn-hangzhou';
+
+    // 生成唯一对象名
+    const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : '';
+    const hash = crypto.randomBytes(16).toString('hex');
+    const objectName = `${folder}/${Date.now()}-${hash}${ext}`;
+
+    // Policy 有效期 30 分钟
+    const expireDate = new Date(Date.now() + 30 * 60 * 1000);
+    const policyObj = {
+      expiration: expireDate.toISOString(),
+      conditions: [
+        { bucket },
+        ['content-length-range', 0, 500 * 1024 * 1024], // 最大 500MB
+        ['eq', '$key', objectName]
+      ]
     };
+
+    const policyBase64 = Buffer.from(JSON.stringify(policyObj)).toString('base64');
+    const signature = crypto
+      .createHmac('sha1', accessKeySecret)
+      .update(policyBase64)
+      .digest('base64');
+
+    const host = `https://${bucket}.${region}.aliyuncs.com`;
 
     res.json({
       success: true,
-      data: config
+      data: {
+        host,
+        objectName,
+        accessKeyId,
+        policy: policyBase64,
+        signature,
+        contentType: mimeType,
+        // 上传完成后的访问 URL
+        url: `${host}/${objectName}`
+      }
     });
   } catch (error) {
-    console.error('获取OSS配置失败:', error);
-    res.status(500).json({
-      success: false,
-      error: { code: 500, message: '获取配置失败: ' + error.message }
-    });
+    console.error('生成上传签名失败:', error);
+    res.status(500).json({ success: false, error: { message: '签名失败: ' + error.message } });
   }
 });
 

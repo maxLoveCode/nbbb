@@ -1,8 +1,10 @@
 const express = require('express');
 const router = express.Router();
+const optionalAuth = require('../../middleware/optionalAuth');
 const productService = require('../../services/productService');
 
 // 公共商品接口（无需认证）
+router.use(optionalAuth);
 
 // 商品搜索
 router.get('/search', async (req, res) => {
@@ -18,7 +20,8 @@ router.get('/search', async (req, res) => {
       page: parseInt(page),
       pageSize: parseInt(pageSize),
       keyword,
-      category
+      category,
+      userId: req.user?.id || null
     });
 
     res.json({
@@ -41,7 +44,9 @@ router.get('/search', async (req, res) => {
 router.get('/:code', async (req, res) => {
   try {
     const { code } = req.params;
-    const product = await productService.getProductByCode(code);
+    const product = await productService.getProductByCode(code, {
+      userId: req.user?.id || null
+    });
 
     if (!product) {
       return res.status(404).json({

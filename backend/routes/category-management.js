@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { Pool } = require("pg");
+const listedProductSyncService = require("../services/listedProductSyncService");
 
 const pool = new Pool({
   host: "localhost",
@@ -9,6 +10,17 @@ const pool = new Pool({
   user: "admin",
   password: "AxiaNBBB123"
 });
+
+async function syncShoppingProductsToListedProducts(categoryName, productCodes, client) {
+  if (!Array.isArray(productCodes) || productCodes.length === 0) return;
+
+  return listedProductSyncService.ensureListedProducts(productCodes, {
+    category: categoryName || null,
+    notes: categoryName
+      ? `auto-synced from shopping category: ${categoryName}`
+      : 'auto-synced from shopping category'
+  }, client);
+}
 
 // 获取分类树结构
 router.get("/tree", async (req, res) => {
@@ -123,25 +135,45 @@ router.post("/level1", async (req, res) => {
 
 // 创建二级分类
 router.post("/level2", async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
   try {
     const { name, parent_id, product_codes = [], sort_order = 0 } = req.body;
     const productCodesStr = Array.isArray(product_codes) 
       ? product_codes.join(';') 
       : product_codes || '';
-    const result = await pool.query(`
+    await client.query("BEGIN");
+    transactionStarted = true;
+    const result = await client.query(`
       INSERT INTO category_management (name, parent_id, product_codes, sort_order)
       VALUES ($1, $2, $3, $4)
       RETURNING *
     `, [name, parent_id, productCodesStr, sort_order]);
-    res.status(201).json({ success: true, data: result.rows[0] });
+    const listedSync = await syncShoppingProductsToListedProducts(name, product_codes, client);
+    await client.query("COMMIT");
+    transactionStarted = false;
+    res.status(201).json({
+      success: true,
+      message: "创建二级分类成功",
+      data: result.rows[0],
+      listed_sync: listedSync?.summary || null
+    });
   } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
     console.error("创建二级分类错误:", error);
     res.status(500).json({ success: false, message: "服务器错误" });
+  } finally {
+    client.release();
   }
 });
 
 // 更新分类
 router.put("/:id", async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+  let listedSync = null;
   try {
     const { id } = req.params;
     const { name, product_codes, sort_order } = req.body;
@@ -172,8 +204,10 @@ router.put("/:id", async (req, res) => {
       return res.status(400).json({ success: false, message: "没有提供更新字段" });
     }
 
+    await client.query("BEGIN");
+    transactionStarted = true;
     values.push(id);
-    const result = await pool.query(`
+    const result = await client.query(`
       UPDATE category_management 
       SET ${updateFields.join(', ')}
       WHERE id = $${paramCount}
@@ -184,10 +218,30 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ success: false, message: "分类不存在" });
     }
 
-    res.json({ success: true, data: result.rows[0] });
+    if (product_codes !== undefined) {
+      listedSync = await syncShoppingProductsToListedProducts(
+        result.rows[0].name,
+        Array.isArray(product_codes) ? product_codes : String(product_codes || "").split(";"),
+        client
+      );
+    }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+    res.json({
+      success: true,
+      message: "分类更新成功",
+      data: result.rows[0],
+      listed_sync: listedSync?.summary || null
+    });
   } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
     console.error("更新分类错误:", error);
     res.status(500).json({ success: false, message: "服务器错误" });
+  } finally {
+    client.release();
   }
 });
 
@@ -227,6 +281,8 @@ router.delete("/:id", async (req, res) => {
 
 // 批量更新商品编码
 router.put("/:id/product-codes", async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
   try {
     const { id } = req.params;
     const { product_codes } = req.body;
@@ -238,7 +294,9 @@ router.put("/:id/product-codes", async (req, res) => {
       });
     }
 
-    const result = await pool.query(`
+    await client.query("BEGIN");
+    transactionStarted = true;
+    const result = await client.query(`
       UPDATE category_management 
       SET product_codes = $1
       WHERE id = $2
@@ -249,10 +307,23 @@ router.put("/:id/product-codes", async (req, res) => {
       return res.status(404).json({ success: false, message: "分类不存在" });
     }
 
-    res.json({ success: true, data: result.rows[0] });
+    const listedSync = await syncShoppingProductsToListedProducts(result.rows[0].name, product_codes, client);
+    await client.query("COMMIT");
+    transactionStarted = false;
+    res.json({
+      success: true,
+      message: "商品编码更新成功",
+      data: result.rows[0],
+      listed_sync: listedSync?.summary || null
+    });
   } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
     console.error("更新商品编码错误:", error);
     res.status(500).json({ success: false, message: "服务器错误" });
+  } finally {
+    client.release();
   }
 });
 

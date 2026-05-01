@@ -14,6 +14,31 @@ const pool = new Pool({
  * 提供用户相关的业务逻辑
  */
 class UserService {
+  async attachWhitelistInfo(users = []) {
+    if (!users.length) return users;
+
+    const ids = users.map((user) => user.id).filter(Boolean);
+    const phones = users.map((user) => user.phone).filter(Boolean);
+    const whitelistResult = await pool.query(
+      `SELECT user_id, phone, pricing_tier, pricing_discount_rate
+       FROM user_pricing_whitelist
+       WHERE user_id = ANY($1) OR phone = ANY($2)`,
+      [ids.length ? ids : [0], phones.length ? phones : [""]]
+    );
+
+    return users.map((user) => {
+      const matched = whitelistResult.rows.find(
+        (row) => row.user_id === user.id || (row.phone && row.phone === user.phone)
+      );
+      return {
+        ...user,
+        mobile: user.mobile || user.phone || null,
+        pricing_tier: matched?.pricing_tier || "default",
+        pricing_discount_rate: matched?.pricing_discount_rate ?? null
+      };
+    });
+  }
+
   /**
    * 根据ID获取用户信息
    * @param {number} userId - 用户ID
@@ -22,11 +47,13 @@ class UserService {
   async getUserById(userId) {
     try {
       const result = await pool.query(
-        "SELECT id, openid, unionid, nickname, avatar_url, phone, email, username, is_active, created_at, updated_at FROM users WHERE id = $1",
+        `SELECT id, openid, unionid, nickname, avatar_url, phone, email, username, is_active, created_at, updated_at
+         FROM users WHERE id = $1`,
         [userId]
       );
 
-      return result.rows.length > 0 ? result.rows[0] : null;
+      const users = await this.attachWhitelistInfo(result.rows);
+      return users.length > 0 ? users[0] : null;
     } catch (error) {
       console.error("获取用户信息失败:", error);
       throw error;
@@ -76,13 +103,14 @@ class UserService {
       }
 
       const result = await pool.query(
-        `INSERT INTO users (openid, unionid, nickname, avatar_url, mobile, email, username, password_hash)
+        `INSERT INTO users (openid, unionid, nickname, avatar_url, phone, email, username, password_hash)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, openid, unionid, nickname, avatar_url, mobile, email, username, is_active, created_at`,
+         RETURNING id, openid, unionid, nickname, avatar_url, phone, email, username, is_active, created_at`,
         [openid, unionid, nickname, avatarUrl, mobile, email, username, passwordHash]
       );
 
-      return result.rows[0];
+      const users = await this.attachWhitelistInfo(result.rows);
+      return users[0];
     } catch (error) {
       console.error("创建用户失败:", error);
       throw error;
@@ -113,7 +141,7 @@ class UserService {
       }
 
       if (mobile !== undefined) {
-        updates.push(`mobile = $${paramIndex++}`);
+        updates.push(`phone = $${paramIndex++}`);
         values.push(mobile);
       }
 
@@ -133,11 +161,12 @@ class UserService {
         UPDATE users 
         SET ${updates.join(", ")}
         WHERE id = $${paramIndex}
-        RETURNING id, openid, unionid, nickname, avatar_url, mobile, email, username, is_active, created_at, updated_at
+        RETURNING id, openid, unionid, nickname, avatar_url, phone, email, username, is_active, created_at, updated_at
       `;
 
       const result = await pool.query(query, values);
-      return result.rows[0];
+      const users = await this.attachWhitelistInfo(result.rows);
+      return users[0];
     } catch (error) {
       console.error("更新用户资料失败:", error);
       throw error;
@@ -251,7 +280,7 @@ class UserService {
       const listResult = await pool.query(listQuery, values);
 
       return {
-        users: listResult.rows,
+        users: await this.attachWhitelistInfo(listResult.rows),
         pagination: {
           page,
           pageSize,
@@ -263,6 +292,37 @@ class UserService {
       console.error("获取用户列表失败:", error);
       throw error;
     }
+  }
+
+  async updateUserPricing(userId, { pricingTier = "default", pricingDiscountRate = null }) {
+    const normalizedTier = String(pricingTier || "default").trim().toLowerCase();
+    const normalizedRate = pricingDiscountRate === null || pricingDiscountRate === undefined || pricingDiscountRate === ""
+      ? null
+      : Number(pricingDiscountRate);
+    const user = await this.getUserById(userId);
+    if (!user) return null;
+
+    if (normalizedTier === "whitelist") {
+      await pool.query(
+        `INSERT INTO user_pricing_whitelist (user_id, phone, pricing_tier, pricing_discount_rate, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (phone)
+         DO UPDATE SET
+           user_id = EXCLUDED.user_id,
+           pricing_tier = EXCLUDED.pricing_tier,
+           pricing_discount_rate = EXCLUDED.pricing_discount_rate,
+           updated_at = NOW()`,
+        [userId, user.phone, normalizedTier, normalizedRate || 0.3]
+      );
+    } else if (user.phone) {
+      await pool.query(
+        `DELETE FROM user_pricing_whitelist
+         WHERE user_id = $1 OR phone = $2`,
+        [userId, user.phone]
+      );
+    }
+
+    return this.getUserById(userId);
   }
 }
 

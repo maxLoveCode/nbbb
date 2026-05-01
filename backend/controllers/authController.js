@@ -2,6 +2,7 @@ const { Pool } = require("pg");
 const wechatUtil = require("../utils/wechat");
 const jwtUtil = require("../utils/jwt");
 const logger = require("../utils/logger");
+const pricingService = require("../services/pricingService");
 
 const pool = new Pool({
   host: "localhost",
@@ -116,6 +117,7 @@ class AuthController {
       });
 
       // 6) 返回响应（含 member）
+      const pricingProfile = await pricingService.getPricingProfile(user.id);
       return res.json({
         code: 0,
         data: {
@@ -126,7 +128,9 @@ class AuthController {
             nickname: user.nickname,
             avatarUrl: user.avatar_url,
             mobile: user.phone || null,
-            member: user.member || 1
+            member: user.member || 1,
+            pricingTier: pricingProfile.pricingTier,
+            pricingDiscountRate: pricingProfile.discountRate
           }
         }
       });
@@ -215,7 +219,8 @@ class AuthController {
       });
 
       const q = await pool.query(
-        `SELECT id, openid, unionid, nickname, avatar_url, phone as mobile, member, is_active, created_at, updated_at
+        `SELECT id, openid, unionid, nickname, avatar_url, phone as mobile, member,
+                is_active, created_at, updated_at
          FROM users WHERE id = $1`,
         [userId]
       );
@@ -226,6 +231,7 @@ class AuthController {
       }
 
       const user = q.rows[0];
+      const pricingProfile = await pricingService.getPricingProfile(userId);
 
       return res.json({
         code: 0,
@@ -237,6 +243,8 @@ class AuthController {
             avatarUrl: user.avatar_url,
             mobile: user.mobile,
             member: user.member,
+            pricingTier: pricingProfile.pricingTier,
+            pricingDiscountRate: pricingProfile.discountRate,
             isActive: user.is_active,
             createdAt: user.created_at,
             updatedAt: user.updated_at

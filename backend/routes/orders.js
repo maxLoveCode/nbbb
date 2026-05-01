@@ -4,6 +4,8 @@ const orderService = require('../services/orderService');
 const auth = require('../middleware/auth');
 const { Pool } = require('pg');
 const jushuitanClient = require('../services/jushuitanClient');
+const productService = require('../services/productService');
+const pricingService = require('../services/pricingService');
 
 const pool = new Pool({
   host: "localhost",
@@ -27,6 +29,93 @@ function generateOrderNo() {
     now.getSeconds().toString().padStart(2, '0');
   const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
   return dateStr + random;
+}
+
+function parseJstItems(result) {
+  if (!result) return [];
+  return result.data?.datas
+    || result.data?.data?.datas
+    || result.data?.items
+    || result.items
+    || result.datas
+    || [];
+}
+
+async function resolveOrderItemsPricing(items, userId) {
+  const pricingProfile = await pricingService.getPricingProfile(userId);
+  const productCodes = [...new Set(
+    (items || [])
+      .map((item) => item.product_code || item.spuId || item.goodsCode || item.i_id || '')
+      .filter(Boolean)
+  )];
+  const extrasMap = await productService.getProductExtrasMap(productCodes);
+  const normalizedItems = [];
+
+  for (const rawItem of items || []) {
+    const productCode = rawItem.product_code || rawItem.spuId || rawItem.goodsCode || rawItem.i_id || '';
+    const skuId = rawItem.sku_id || rawItem.skuId || null;
+    const quantity = Number(rawItem.quantity || rawItem.num || 1) || 1;
+    let name = rawItem.name || rawItem.goodsName || rawItem.title || productCode;
+    let image = rawItem.image || rawItem.pic || rawItem.thumb || null;
+    let spec = rawItem.properties || rawItem.spec || rawItem.skuSpecLst?.map((s) => s.specValue).join(' ') || null;
+    let price = 0;
+
+    if (productCode) {
+      try {
+        const result = await jushuitanClient.call(
+          "jushuitan.item.query",
+          {
+            i_ids: [productCode],
+            page_index: 1,
+            page_size: 1
+          },
+          {},
+          "https://openapi.jushuitan.com/open/mall/item/query"
+        );
+
+        const jstProduct = productService.normalizeJstProduct(parseJstItems(result)[0]);
+        if (jstProduct) {
+          const pricing = pricingService.applyPricing(
+            productService.getMergedPricing(jstProduct, extrasMap[productCode] || null),
+            pricingProfile
+          );
+
+          name = jstProduct.name || name;
+          image = jstProduct.pic || image;
+          price = pricing.price ?? 0;
+
+          if (skuId && Array.isArray(jstProduct.skus)) {
+            const sku = jstProduct.skus.find((item) => item.sku_id === skuId);
+            if (sku) {
+              name = sku.name || name;
+              image = sku.pic || image;
+              spec = sku.properties_value || spec;
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[ORDER] 重算商品价格失败:', productCode, error.message);
+      }
+    }
+
+    if (!price) {
+      let fallbackPrice = Number(rawItem.settlePrice || rawItem.price || rawItem.salePrice || 0);
+      if (!Number.isFinite(fallbackPrice)) fallbackPrice = 0;
+      price = fallbackPrice > 1000 ? Math.round(fallbackPrice) : Math.round(fallbackPrice * 100);
+    }
+
+    normalizedItems.push({
+      product_code: productCode,
+      sku_id: skuId,
+      name,
+      image,
+      price,
+      quantity,
+      spec
+    });
+  }
+
+  return normalizedItems;
 }
 
 // 创建订单
@@ -188,22 +277,17 @@ router.post('/', auth, async (req, res) => {
     // 生成订单号
     const orderNo = generateOrderNo();
     
-    // 计算订单金额 - 兼容多种价格字段名
+    orderItems = await resolveOrderItemsPricing(orderItems, userId);
+
+    // 计算订单金额（统一按分计算）
     let totalAmount = 0;
     for (const item of orderItems) {
-      // 价格：settlePrice(小程序) > price > 0，单位可能是分或元
-      let price = item.settlePrice || item.price || item.salePrice || 0;
-      // 如果价格是字符串，转为数字
-      if (typeof price === 'string') {
-        price = parseFloat(price);
-      }
-      // 数量：quantity > num > 1
-      const qty = item.quantity || item.num || 1;
+      const price = Number(item.price) || 0;
+      const qty = item.quantity || 1;
       totalAmount += price * qty;
     }
-    
-    // 判断金额单位：如果总金额小于100，可能已经是元
-    const payAmount = totalAmount > 1000 ? totalAmount / 100 : totalAmount;
+
+    const payAmount = totalAmount / 100;
     // 运费：使用请求中的运费，默认为0
     const freight = reqFreight || 0;
     
@@ -251,21 +335,16 @@ router.post('/', auth, async (req, res) => {
       const item = orderItems[i];
       const outerOiId = `${orderNo}-${i + 1}`;
       
-      // 价格：兼容多种格式
-      let itemPrice = item.settlePrice || item.price || item.salePrice || 0;
-      if (typeof itemPrice === 'string') itemPrice = parseFloat(itemPrice);
-      // 如果价格大于1000，认为是分，转元
-      if (itemPrice > 1000) itemPrice = itemPrice / 100;
-      
-      const qty = item.quantity || item.num || 1;
+      const itemPrice = (Number(item.price) || 0) / 100;
+      const qty = item.quantity || 1;
       const itemAmount = itemPrice * qty;
       
       // 商品编码：兼容多种格式
-      const productCode = item.product_code || item.spuId || item.goodsCode || item.i_id || '';
-      const skuId = item.sku_id || item.skuId || productCode;
-      const itemName = item.name || item.goodsName || item.title || productCode;
-      const itemPic = item.image || item.pic || item.thumb || null;
-      const itemSpec = item.properties || item.spec || item.skuSpecLst?.map(s => s.specValue).join(' ') || null;
+      const productCode = item.product_code || '';
+      const skuId = item.sku_id || productCode;
+      const itemName = item.name || productCode;
+      const itemPic = item.image || null;
+      const itemSpec = item.spec || null;
       
       await client.query(`
         INSERT INTO order_items (

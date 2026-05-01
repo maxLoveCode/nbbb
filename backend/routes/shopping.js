@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const { Pool } = require("pg");
 const jushuitanClient = require("../services/jushuitanClient");
+const optionalAuth = require("../middleware/optionalAuth");
+const productService = require("../services/productService");
 const { convertImageUrl } = require("../utils/imageUrlConverter");
 
 const pool = new Pool({
@@ -11,6 +13,8 @@ const pool = new Pool({
   user: "admin",
   password: "AxiaNBBB123"
 });
+
+router.use(optionalAuth);
 
 /**
  * 选购页接口
@@ -98,54 +102,13 @@ router.get("/", async (req, res) => {
           ? productCodes 
           : productCodes.slice((pageIndex - 1) * limit, pageIndex * limit);
 
-        // 批量查询商品详情（优化：一次API调用查询所有商品）
+        // 批量查询商品详情（统一走 productService，应用本地改价逻辑）
         if (codesToQuery.length > 0) {
           try {
-            // 1. 批量查询商品信息（一次API调用）
-            const productResult = await jushuitanClient.call(
-              "jushuitan.item.query",
-              {
-                i_ids: codesToQuery,
-                page_index: 1,
-                page_size: codesToQuery.length + 10
-              },
-              {},
-              "https://openapi.jushuitan.com/open/mall/item/query"
-            );
-
-            // 解析商品响应
-            let items = null;
-            if (productResult.code === 0) {
-              if (productResult.data && productResult.data.datas) {
-                items = productResult.data.datas;
-              } else if (productResult.data && productResult.data.data && productResult.data.data.datas) {
-                items = productResult.data.data.datas;
-              } else if (productResult.data && productResult.data.items) {
-                items = productResult.data.items;
-              } else if (productResult.items) {
-                items = productResult.items;
-              } else if (productResult.datas) {
-                items = productResult.datas;
-              }
-            }
-
-            // 构建商品Map（商品编码 -> 商品信息）
-            const productMap = new Map();
-            if (items && items.length > 0) {
-              for (const item of items) {
-                // 处理特殊情况：如果item只有skus数组
-                if (item.skus && item.skus.length > 0 && !item.i_id) {
-                  const firstSku = item.skus[0];
-                  item.i_id = firstSku.i_id;
-                  item.name = firstSku.name || item.name;
-                  item.brand = firstSku.brand || item.brand;
-                  item.pic = firstSku.pic || item.pic;
-                }
-                if (item.i_id) {
-                  productMap.set(item.i_id, item);
-                }
-              }
-            }
+            const pricedProducts = await productService.batchGetProductsFromJST(codesToQuery, "", {
+              userId: req.user?.id || null
+            });
+            const productMap = new Map(pricedProducts.map(item => [item.code, item]));
 
             // 2. 批量查询库存（一次API调用）
             const inventoryMap = new Map();
@@ -183,19 +146,14 @@ router.get("/", async (req, res) => {
             for (const productCode of codesToQuery) {
               const item = productMap.get(productCode);
               if (item) {
-                const price = item.s_price ? Math.round(item.s_price * 100) : 0;
-                const originalPrice = item.market_price 
-                  ? Math.round(item.market_price * 100) 
-                  : (item.c_price ? Math.round(item.c_price * 100) : null);
-
                 allProducts.push({
                   product_code: productCode,
                   name: item.name || productCode,
-                  image: item.pic ? convertImageUrl(item.pic, { forceHttps: true }) : null,
-                  price: price,
-                  original_price: originalPrice,
+                  image: item.main_image ? convertImageUrl(item.main_image, { forceHttps: true }) : null,
+                  price: item.price ?? 0,
+                  original_price: item.original_price ?? item.jst_price ?? null,
                   stock: inventoryMap.get(productCode) || 0,
-                  i_id: item.i_id || null
+                  i_id: item.code || null
                 });
               }
             }

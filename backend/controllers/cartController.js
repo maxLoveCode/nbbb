@@ -2,6 +2,8 @@ const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const cartValidator = require("../utils/cartValidator");
 const jushuitanClient = require("../services/jushuitanClient");
+const pricingService = require("../services/pricingService");
+const productService = require("../services/productService");
 const { convertImageUrls, convertImageUrl } = require("../utils/imageUrlConverter");
 
 const pool = new Pool({
@@ -26,8 +28,9 @@ class CartController {
    * @param {string} skuId - SKU编码
    * @returns {Promise<Object>} 商品快照
    */
-  async fetchProductSnapshot(productCode, skuId) {
+  async fetchProductSnapshot(productCode, skuId, userId = null) {
     try {
+      const pricingProfile = await pricingService.getPricingProfile(userId);
       const response = await jushuitanClient.call(
         "jushuitan.item.query",
         {
@@ -52,11 +55,22 @@ class CartController {
       }
 
       const product = items[0];
+      const extrasMap = await productService.getProductExtrasMap([productCode]);
+      const extras = extrasMap[productCode] || null;
+      const mergedPricing = pricingService.applyPricing(
+        productService.getMergedPricing(product, extras),
+        pricingProfile
+      );
+      const salePriceYuan = mergedPricing.price != null ? mergedPricing.price / 100 : null;
+      const originalPriceYuan = mergedPricing.original_price != null
+        ? mergedPricing.original_price / 100
+        : (typeof product.s_price === "number" ? product.s_price : null);
+
       let snapshot = {
         product_name: product.name,
         product_pic: convertImageUrl(product.pic),
-        original_price: product.s_price,
-        sale_price: product.s_price,
+        original_price: originalPriceYuan,
+        sale_price: salePriceYuan,
         sku_properties: null,
         sku_pic: null
       };
@@ -65,7 +79,7 @@ class CartController {
       if (skuId && product.skus && product.skus.length > 0) {
         const sku = product.skus.find(s => s.sku_id === skuId);
         if (sku) {
-          snapshot.sale_price = sku.sale_price || product.s_price;
+          snapshot.sale_price = salePriceYuan ?? sku.sale_price ?? product.s_price;
           snapshot.sku_properties = sku.properties_value;
           snapshot.sku_pic = sku.pic ? convertImageUrl(sku.pic) : null;
         }
@@ -151,7 +165,7 @@ class CartController {
       }
 
       // 获取商品快照（只需获取一次）
-      const snapshot = await this.fetchProductSnapshot(product_code, sku_id);
+      const snapshot = await this.fetchProductSnapshot(product_code, sku_id, userId);
       
       if (!snapshot) {
         logger.warn('CART', '商品信息获取失败', {
@@ -270,10 +284,10 @@ class CartController {
       let validityChecks;
       if (hasSnapshot) {
         // 使用快照 + 只查库存（优化版）
-        validityChecks = await cartValidator.batchCheckWithSnapshot(cartRows.rows);
+        validityChecks = await cartValidator.batchCheckWithSnapshot(cartRows.rows, { userId });
       } else {
         // 兼容旧数据：没有快照时仍查商品详情
-        validityChecks = await cartValidator.batchCheckValidity(cartRows.rows);
+        validityChecks = await cartValidator.batchCheckValidity(cartRows.rows, { userId });
       }
 
       const invalidItems = validityChecks.filter(check => !check.validity.valid);

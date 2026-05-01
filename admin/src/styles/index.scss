@@ -159,6 +159,8 @@ html, body {
   --el-table-border-color: var(--border-color);
   --el-table-text-color: var(--text-primary);
   --el-table-header-text-color: var(--text-secondary);
+  // 条纹行背景色
+  --el-fill-color-lighter: #1a1a1a;
   
   font-size: 13px;
   
@@ -171,6 +173,15 @@ html, body {
   
   .el-table__row {
     transition: background 0.2s;
+    
+    // 条纹行样式
+    &--striped {
+      background-color: #1a1a1a !important;
+      
+      td.el-table__cell {
+        background-color: #1a1a1a !important;
+      }
+    }
   }
 }
 

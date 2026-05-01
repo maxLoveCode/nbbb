@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const optionalAuth = require('../../middleware/optionalAuth');
 const miniprogramProductController = require('../../controllers/miniprogram/miniprogramProductController');
+
+router.use(optionalAuth);
 
 // 获取商品列表（无需认证）
 router.get('/', miniprogramProductController.getProductList.bind(miniprogramProductController));

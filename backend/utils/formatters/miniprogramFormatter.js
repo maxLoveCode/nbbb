@@ -16,6 +16,11 @@ function formatProduct(product) {
     mainImage: product.main_image,
     images: product.images || [],
     price: product.price, // 单位：分
+    originalPrice: product.original_price ?? null,
+    publicPrice: product.public_price ?? product.price,
+    priceNote: product.price_note ?? null,
+    priceSource: product.price_source ?? "default",
+    pricingTier: product.pricing_tier ?? "default",
     costPrice: product.cost_price,
     onsale: product.onsale,
     brand: product.brand,
@@ -83,7 +88,9 @@ function formatUser(user) {
     openid: user.openid,
     nickname: user.nickname,
     avatarUrl: user.avatar_url,
-    mobile: user.mobile
+    mobile: user.mobile,
+    pricingTier: user.pricing_tier || "default",
+    pricingDiscountRate: user.pricing_discount_rate ?? null
   };
 }
 

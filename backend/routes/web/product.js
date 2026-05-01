@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
+const optionalAuth = require('../../middleware/optionalAuth');
 const productService = require('../../services/productService');
 const webFormatter = require('../../utils/formatters/webFormatter');
+
+router.use(optionalAuth);
 
 // 获取商品列表
 router.get('/', async (req, res) => {
@@ -17,7 +20,8 @@ router.get('/', async (req, res) => {
       page: parseInt(page),
       pageSize: parseInt(pageSize),
       keyword,
-      category
+      category,
+      userId: req.user?.id || null
     });
 
     res.json(webFormatter.formatResponse({
@@ -33,7 +37,9 @@ router.get('/', async (req, res) => {
 router.get('/:code', async (req, res) => {
   try {
     const { code } = req.params;
-    const product = await productService.getProductByCode(code);
+    const product = await productService.getProductByCode(code, {
+      userId: req.user?.id || null
+    });
 
     if (!product) {
       return res.status(404).json(webFormatter.formatError("商品不存在", 404));
