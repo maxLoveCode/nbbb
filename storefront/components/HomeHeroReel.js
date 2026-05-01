@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-export function HomeHeroReel({ slides = [], categories = [] }) {
+export function HomeHeroReel({ slides = [] }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const sectionRefs = useRef([]);
   const videoRefs = useRef([]);
-
-  const quickCategories = useMemo(() => categories.slice(0, 5), [categories]);
 
   useEffect(() => {
     const sections = sectionRefs.current.filter(Boolean);
@@ -90,42 +88,10 @@ export function HomeHeroReel({ slides = [], categories = [] }) {
 
             <div className="hero-reel-content">
               <div className="hero-reel-copy">
-                <div className="hero-reel-topline">
-                  <span>{slide.brand_name || "NBBB Atelier"}</span>
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                </div>
-                <h1>{slide.title || "NBBB Atelier"}</h1>
-                <p>{slide.subtitle || "新季系列以全屏影像叙事，带来更沉浸的品牌首页体验。"}</p>
-                <div className="hero-reel-actions">
-                  <Link href={slide.href || "/collections"} className="button-primary">
-                    {slide.button_text || "进入系列"}
-                  </Link>
-                </div>
-              </div>
-
-              <div className="hero-reel-side">
-                <div className="hero-reel-side-card">
-                  <span className="eyebrow">Series note</span>
-                  <strong>{slide.sideTitle || "Moving editorial frame"}</strong>
-                  <p>{slide.sideDescription || "用翻页节奏把品牌故事、视频和系列入口串成连续体验。"}</p>
-                </div>
-
-                <div className="hero-reel-category-row">
-                  {quickCategories.map((category) => (
-                    <Link key={category.slug} href={`/collections/${category.slug}`} className="hero-reel-chip">
-                      {category.name}
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="hero-reel-bottom-bar">
-              <span className="hero-reel-scroll-hint">向上滑动继续浏览</span>
-              <div className="hero-reel-progress">
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                <span>/</span>
-                <span>{String(slides.length).padStart(2, "0")}</span>
+                <p className="hero-reel-minimal-line">{slide.brand_name || "NBBB Atelier"}</p>
+                <Link href={slide.href || "/collections"} className="hero-reel-text-link">
+                  View collection
+                </Link>
               </div>
             </div>
           </section>

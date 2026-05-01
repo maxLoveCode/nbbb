@@ -3,8 +3,8 @@ import { getCategories, getListing, getSiteUrl } from "@/lib/api";
 export default async function sitemap() {
   const siteUrl = getSiteUrl();
   const [categories, listing] = await Promise.all([
-    getCategories(),
-    getListing({ pageSize: 50 })
+    getCategories().catch(() => []),
+    getListing({ pageSize: 50 }).catch(() => ({ products: [] }))
   ]);
 
   const staticRoutes = [
