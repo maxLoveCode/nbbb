@@ -7,6 +7,9 @@ node_modules/
 .env.*.local
 *.backup
 
+# 聚水潭 OAuth token 缓存（勿提交；可由 scripts/refresh_jst_token.js 或运行时生成）
+backend/.jst_token.json
+
 # Logs
 logs/
 *.log
