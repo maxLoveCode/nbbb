@@ -3,6 +3,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("path");
+const fs = require("fs");
 require("dotenv").config({ path: path.join(__dirname, '..', '.env') });
 
 const requestLogger = require("./middleware/requestLogger");
@@ -86,8 +87,9 @@ app.get('/web/', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'web', 'index.html'));
 });
 
-// Admin静态文件服务 - CDN版本，无需构建
-const adminPath = path.join(__dirname, '..', 'admin-cdn');
+// Admin静态文件服务：优先使用本地构建产物，缺失时回退到 CDN 版本
+const builtAdminPath = path.join(__dirname, '..', 'admin', 'dist');
+const adminPath = fs.existsSync(builtAdminPath) ? builtAdminPath : path.join(__dirname, '..', 'admin-cdn');
 app.use('/admin', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');

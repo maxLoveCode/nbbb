@@ -2,13 +2,14 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import router from '@/router'
+import { getAdminApiBaseUrl } from '@/config/adminEnvironment'
 
 const request = axios.create({
-  baseURL: '/api/admin',
   timeout: 30000
 })
 
 request.interceptors.request.use(config => {
+  config.baseURL = getAdminApiBaseUrl()
   const userStore = useUserStore()
   if (userStore.token) {
     config.headers.Authorization = `Bearer ${userStore.token}`

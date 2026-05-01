@@ -194,6 +194,10 @@ GET /api/home
 
 ## 🔧 开发指南
 
+### 环境与部署文档
+
+- [本地部署与 Staging 指南](docs/local-deployment-and-staging.md)
+
 ### 项目结构
 ```
 /nbbb/

@@ -65,6 +65,7 @@
         </div>
         
         <div class="header-right">
+          <AdminEnvironmentSelector />
           <el-dropdown @command="handleCommand">
             <div class="user-profile">
               <el-avatar :size="36">
@@ -104,6 +105,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { ElMessageBox } from 'element-plus'
+import AdminEnvironmentSelector from '@/components/AdminEnvironmentSelector.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -241,6 +243,10 @@ function handleCommand(cmd) {
   }
   
   .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+
     .user-profile {
       display: flex;
       align-items: center;

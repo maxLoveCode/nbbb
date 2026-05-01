@@ -10,6 +10,9 @@
     <div class="login-content">
       <!-- 左侧品牌区 -->
       <div class="brand-section">
+        <div class="environment-row">
+          <AdminEnvironmentSelector />
+        </div>
         <div class="brand-logo">NB</div>
         <h1 class="brand-title">NOT-BORING<br/>BOREBOI</h1>
         <p class="brand-subtitle">Admin Dashboard</p>
@@ -84,6 +87,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { User, Lock, Goods, DataAnalysis } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/user'
+import AdminEnvironmentSelector from '@/components/AdminEnvironmentSelector.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -175,6 +179,10 @@ async function handleLogin() {
 
 .brand-section {
   flex: 1;
+
+  .environment-row {
+    margin-bottom: 24px;
+  }
   
   .brand-logo {
     width: 80px;

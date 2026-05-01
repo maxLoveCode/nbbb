@@ -1,11 +1,17 @@
 import request from './request'
 import axios from 'axios'
+import { getPublicApiBaseUrl } from '@/config/adminEnvironment'
 
 // 创建不带 /admin 前缀的请求实例（用于非 admin 路由的 API）
 const apiRequest = axios.create({
-  baseURL: '/api',
   timeout: 30000
 })
+
+apiRequest.interceptors.request.use(config => {
+  config.baseURL = getPublicApiBaseUrl()
+  return config
+})
+
 apiRequest.interceptors.response.use(response => response.data)
 
 export const authApi = {

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node backend/server.js",
     "dev": "nodemon backend/server.js",
+    "db:sync:staging": "bash scripts/sync_prod_to_staging.sh",
     "test": "node tests/run-tests.js",
     "test:auth": "node tests/auth.test.js",
     "test:api": "node tests/api.test.js"
