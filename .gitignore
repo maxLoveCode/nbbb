@@ -37,3 +37,6 @@ backend/certs/*.key
 
 # Terminal files
 terminals/
+
+# Next.js build output
+storefront/.next/
